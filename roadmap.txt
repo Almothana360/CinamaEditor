@@ -1,0 +1,47 @@
+Architectural Refactoring Blueprint
+To prepare the codebase for seamless separation into modular compilation units without breaking single-file compilation, we organize the system into eight distinct domains. Each domain contains a Header Interface (declarations and types) followed by an Implementation Section:
+
+src/
+├── core/
+│   ├── types.h        // Shared constants, UI scale tables, CCameraMode
+│   ├── theme.h / .c   // Theme definitions, color palettes, theme manager
+├── buffer/
+│   ├── line.h / .c    // Dynamic line buffers, text measurement
+│   ├── syntax.h / .c  // Lexer, syntax highlighting, bracket matching
+├── editor/
+│   ├── editor.h / .c  // Buffer manipulation, cursor, selection, clipboard
+├── fx/
+│   ├── audio.h / .c   // Procedural synthesizer, sound effect dispatcher
+│   ├── fx.h / .c      // Particles, bloom flashes, CRT scanlines, spotlight
+└── ui/
+    ├── ui.h / .c      // Context menu, minimap, combo HUD, modal overlays
+    └── main.c         // Game loop, camera controller, input router
+Key Architectural Improvements:
+Zero Global Soup: Encapsulated scattered static globals into explicit subsystem contexts (AudioSystem, FxSystem, ContextMenu, Editor, and AppEngine).
+
+Explicit Dependency Injection: Functions now explicitly receive the contexts they operate on (Theme*, AudioSystem*, FxSystem*), eliminating hidden side-effects.
+
+Decoupled Editor Core: The editor logic does not directly mutate audio hardware or particle arrays; instead, it delegates effects via clean subsystem interfaces.
+
+Header Guards & Single-Unit Structure: Every module in the file below is demarcated with clear boundary banners so you can copy-paste each block directly into .h and .c files when splitting.
+
+How to Split into Multiple Files When Needed
+When you are ready to separate the codebase into multiple files:
+
+Extract Headers: Copy the typedef and function declarations of each numbered module block into its respective .h file:
+
+types.h: TAB_SIZE, CCameraMode, UI_SCALES, Theme
+
+audio.h: AudioSystem and Audio_* prototypes
+
+buffer.h: Line and Line_* prototypes
+
+syntax.h: BracketMatch and Syntax_* prototypes
+
+fx.h: Particle, GlowFlash, FxSystem and Fx_* prototypes
+
+editor.h: Editor, SmoothCursor and Editor_* prototypes
+
+ui.h: ContextMenu, ComboSystem and UI_* prototypes
+
+Extract Implementations: Move the corresponding static and non-static function bodies into matching .c files (audio.c, buffer.c, syntax.c, fx.c, editor.c, ui.c).
