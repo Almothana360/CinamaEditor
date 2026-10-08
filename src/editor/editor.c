@@ -33,11 +33,9 @@ void Editor_AddLine(Editor *ed, Line line) {
 void Editor_InitEmpty(Editor *ed) {
     if (!ed) return;
     Editor_Free(ed);
-
     Line line;
     Line_Init(&line);
     Editor_AddLine(ed, line);
-
     ed->cursor_row = 0;
     ed->cursor_col = 0;
     ed->has_selection = false;
@@ -102,7 +100,6 @@ bool Editor_LoadFile(Editor *ed, const char *filepath) {
     ed->cursor_col = 0;
     ed->has_selection = false;
     ed->modified = false;
-
     Syntax_UpdateMultilineComments(ed->lines, ed->line_count);
     return true;
 }
@@ -137,6 +134,7 @@ void Editor_GetSelectionBounds(const Editor *ed, size_t *sr, size_t *sc, size_t 
         *sc = *ec = ed->cursor_col;
         return;
     }
+
     if (ed->anchor_row < ed->cursor_row || (ed->anchor_row == ed->cursor_row && ed->anchor_col <= ed->cursor_col)) {
         *sr = ed->anchor_row; *sc = ed->anchor_col;
         *er = ed->cursor_row; *ec = ed->cursor_col;
@@ -180,8 +178,8 @@ void Editor_DeleteSelection(Editor *ed) {
     } else {
         Line *first = &ed->lines[sr];
         Line *last = &ed->lines[er];
-
         size_t tail_len = last->size - ec;
+
         first->size = sc;
         if (tail_len > 0) {
             Line_AppendStr(first, &last->chars[ec], tail_len);
@@ -238,6 +236,7 @@ void Editor_CopySelection(const Editor *ed) {
         }
     }
     clip_buf[offset] = '\0';
+
     SetClipboardText(clip_buf);
     free(clip_buf);
 }
@@ -281,9 +280,7 @@ void Editor_PasteClipboard(Editor *ed) {
             Editor_InsertNewline(ed);
             clip++;
         } else if (*clip == '\t') {
-            for (int k = 0; k < CE_TAB_SIZE; ++k) {
-                Editor_InsertChar(ed, ' ');
-            }
+            Editor_InsertChar(ed, '\t');
             clip++;
         } else {
             Editor_InsertChar(ed, *clip++);
@@ -333,23 +330,21 @@ void Editor_InsertNewline(Editor *ed) {
     }
 
     bool extra_indent = (ed->cursor_col > 0 && curr->chars[ed->cursor_col - 1] == '{');
-
     char indent_buf[512];
     size_t total_indent = 0;
+
     if (indent_len > 0 && indent_len < sizeof(indent_buf) - CE_TAB_SIZE - 2) {
         memcpy(indent_buf, curr->chars, indent_len);
         total_indent = indent_len;
     }
-    if (extra_indent && total_indent + CE_TAB_SIZE < sizeof(indent_buf) - 1) {
-        for (int k = 0; k < CE_TAB_SIZE; ++k) {
-            indent_buf[total_indent++] = ' ';
-        }
+
+    if (extra_indent && total_indent + 1 < sizeof(indent_buf) - 1) {
+        indent_buf[total_indent++] = '\t';
     }
     indent_buf[total_indent] = '\0';
 
     size_t tail_len = curr->size > ed->cursor_col ? curr->size - ed->cursor_col : 0;
     Line_Reserve(next, total_indent + tail_len);
-
     if (total_indent > 0) {
         memcpy(next->chars, indent_buf, total_indent);
         next->size = total_indent;
@@ -391,7 +386,6 @@ void Editor_Backspace(Editor *ed) {
             Line_AppendStr(prev, curr->chars, curr->size);
         }
         Line_Free(curr);
-
         memmove(&ed->lines[ed->cursor_row],
                 &ed->lines[ed->cursor_row + 1],
                 (ed->line_count - (ed->cursor_row + 1)) * sizeof(Line));
@@ -439,6 +433,7 @@ void Editor_MoveWordLeft(Editor *ed) {
         }
         return;
     }
+
     size_t col = ed->cursor_col;
     while (col > 0 && isspace((unsigned char)l->chars[col - 1])) col--;
     while (col > 0 && !isspace((unsigned char)l->chars[col - 1])) col--;
@@ -455,6 +450,7 @@ void Editor_MoveWordRight(Editor *ed) {
         }
         return;
     }
+
     size_t col = ed->cursor_col;
     while (col < l->size && !isspace((unsigned char)l->chars[col])) col++;
     while (col < l->size && isspace((unsigned char)l->chars[col])) col++;
@@ -513,6 +509,7 @@ void Editor_DuplicateLine(Editor *ed) {
             ed->line_capacity = new_cap;
         }
     }
+
     memmove(&ed->lines[ed->cursor_row + 2],
             &ed->lines[ed->cursor_row + 1],
             (ed->line_count - (ed->cursor_row + 1)) * sizeof(Line));

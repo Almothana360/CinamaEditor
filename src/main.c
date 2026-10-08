@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <math.h>
 #include "core/types.h"
 #include "core/theme.h"
 #include "buffer/line.h"
@@ -13,9 +13,7 @@
 #include "fx/fx.h"
 #include "ui/ui.h"
 
-/**
- * Top-level application coordinator state.
- */
+// Top-level application coordinator state.
 typedef struct {
     Editor editor;
     SmoothCursor cursor;
@@ -24,14 +22,11 @@ typedef struct {
     FxSystem fx;
     ContextMenu menu;
     ComboSystem combo;
-
     int theme_idx;
     int ui_scale_idx;
     CCameraMode cam_mode;
-
     Font font_body;
     Font font_syntax;
-
     float user_zoom_mult;
     bool show_help;
     bool is_mouse_dragging;
@@ -62,8 +57,8 @@ static void App_Init(AppEngine *app, const char *initial_file) {
     }
 
     Editor_InitEmpty(&app->editor);
-
     float line_height = CE_FONT_SIZE + 8.0f;
+
     app->camera.rotation = 0.0f;
     app->camera.zoom = 1.30f;
     app->camera.target = (Vector2){ 0.0f, line_height * 0.5f };
@@ -81,17 +76,33 @@ static void App_Init(AppEngine *app, const char *initial_file) {
             "#include <stdio.h>\n"
             "\n"
             "int main(int argc, char **argv) {\n"
-            "    printf(\"Cinema code editor!\\n\");\n"
-            "    return 0;\n"
+            "\tprintf(\"Cinema code editor!\\n\");\n"
+            "\treturn 0;\n"
             "}\n";
-        while (*sample) {
-            if (*sample == '\n') Editor_InsertNewline(&app->editor);
-            else Editor_InsertChar(&app->editor, *sample);
-            sample++;
+
+        Editor_Free(&app->editor);
+        const char *p = sample;
+        const char *line_start = p;
+        while (*p) {
+            if (*p == '\n') {
+                Line line;
+                Line_Init(&line);
+                Line_AppendStr(&line, line_start, (size_t)(p - line_start));
+                Editor_AddLine(&app->editor, line);
+                line_start = p + 1;
+            }
+            p++;
+        }
+        if (p > line_start) {
+            Line line;
+            Line_Init(&line);
+            Line_AppendStr(&line, line_start, (size_t)(p - line_start));
+            Editor_AddLine(&app->editor, line);
         }
         app->editor.cursor_row = 6;
-        app->editor.cursor_col = 4;
+        app->editor.cursor_col = 1;
         app->editor.modified = false;
+        Syntax_UpdateMultilineComments(app->editor.lines, app->editor.line_count);
     }
 }
 
@@ -131,11 +142,13 @@ int main(int argc, char **argv) {
     App_Init(&app, (argc > 1) ? argv[1] : NULL);
 
     float line_height = CE_FONT_SIZE + 8.0f;
+    float wheel_accum = 0.0f;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         int screen_w = GetScreenWidth();
         int screen_h = GetScreenHeight();
+
         const Theme *theme = Theme_Get(app.theme_idx);
         float ui_scale = Theme_GetUIScale(app.ui_scale_idx);
 
@@ -200,7 +213,6 @@ int main(int argc, char **argv) {
                     app.editor.anchor_row = r;
                     app.editor.anchor_col = best_c;
                 }
-
                 app.editor.cursor_row = r;
                 app.editor.cursor_col = best_c;
                 app.is_mouse_dragging = true;
@@ -235,10 +247,37 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Ctrl + Mouse Wheel Zoom
+        // Mouse Wheel: Ctrl + Wheel for Zoom, Wheel alone for Cursor Scroll
         float wheel = GetMouseWheelMove();
         if (ctrl && wheel != 0.0f) {
             app.user_zoom_mult = Clamp(app.user_zoom_mult + wheel * 0.12f, 0.35f, 3.2f);
+            wheel_accum = 0.0f;
+        } else if (!ctrl && wheel != 0.0f && !app.menu.active && app.editor.line_count > 0) {
+            wheel_accum += wheel * 3.0f;
+            int lines_to_scroll = (int)wheel_accum;
+            if (lines_to_scroll != 0) {
+                wheel_accum -= (float)lines_to_scroll;
+                int new_row = (int)app.editor.cursor_row - lines_to_scroll;
+                if (new_row < 0) new_row = 0;
+                if (new_row >= (int)app.editor.line_count) new_row = (int)app.editor.line_count - 1;
+
+                if (shift && !app.editor.has_selection) {
+                    app.editor.anchor_row = app.editor.cursor_row;
+                    app.editor.anchor_col = app.editor.cursor_col;
+                    app.editor.has_selection = true;
+                } else if (!shift && app.editor.has_selection) {
+                    Editor_ClearSelection(&app.editor);
+                }
+
+                app.editor.cursor_row = (size_t)new_row;
+                if (app.editor.cursor_col > app.editor.lines[app.editor.cursor_row].size) {
+                    app.editor.cursor_col = app.editor.lines[app.editor.cursor_row].size;
+                }
+
+                if (shift && app.editor.cursor_row == app.editor.anchor_row && app.editor.cursor_col == app.editor.anchor_col) {
+                    app.editor.has_selection = false;
+                }
+            }
         }
 
         // Keyboard Command Router
@@ -278,9 +317,7 @@ int main(int argc, char **argv) {
         } else if (IsKeyPressed(KEY_DELETE)) {
             Editor_Delete(&app.editor);
         } else if (IsKeyPressed(KEY_TAB)) {
-            for (int k = 0; k < CE_TAB_SIZE; ++k) {
-                Editor_InsertChar(&app.editor, ' ');
-            }
+            Editor_InsertChar(&app.editor, '\t');
             Combo_RegisterHit(&app.combo);
             Audio_PlayKey(&app.audio, KEY_SPACE, app.combo.streak);
         } else {
@@ -344,7 +381,6 @@ int main(int argc, char **argv) {
                     if (ch >= 32 && ch <= 126) {
                         Editor_InsertChar(&app.editor, (char)ch);
                         Combo_RegisterHit(&app.combo);
-
                         Audio_PlayKey(&app.audio, ch == ' ' ? KEY_SPACE : KEY_A, app.combo.streak);
                         Fx_AddTrauma(&app.fx, (app.combo.streak > 20) ? 0.35f : 0.22f);
 
@@ -360,7 +396,6 @@ int main(int argc, char **argv) {
                                 float x0 = Line_GetColX(app.font_syntax, &app.editor.lines[app.editor.cursor_row], s_col, CE_FONT_SIZE, CE_FONT_SPACING);
                                 float x1 = Line_GetColX(app.font_syntax, &app.editor.lines[app.editor.cursor_row], e_col, CE_FONT_SIZE, CE_FONT_SPACING);
                                 Rectangle rect = { x0, (float)app.editor.cursor_row * line_height, x1 - x0, line_height };
-
                                 Fx_TriggerGlow(&app.fx, rect, glow_col);
                                 Fx_EmitParticles(&app.fx, (Vector2){ x1, (float)app.editor.cursor_row * line_height + line_height * 0.5f }, glow_col, 25, app.combo.streak > 15);
                                 Audio_PlayGlow(&app.audio);
@@ -381,34 +416,56 @@ int main(int argc, char **argv) {
         Vector2 target_center = { 0 };
         float final_target_zoom = 1.0f;
         float gutter_space = 45.0f;
-
         if (app.cam_mode == CAM_MODE_BOUNDS_FIT) {
-            float max_script_w = 0.0f;
-            for (size_t i = 0; i < app.editor.line_count; ++i) {
-                float lw = Line_GetColX(app.font_syntax, &app.editor.lines[i], app.editor.lines[i].size, CE_FONT_SIZE, CE_FONT_SPACING);
-                if (lw > max_script_w) max_script_w = lw;
+            float visible_h = (float)screen_h * 0.70f;
+            float total_script_h = (float)app.editor.line_count * line_height;
+
+            if (total_script_h <= visible_h) {
+                // Short script: frame and fit the entire script comfortably on screen
+                float max_script_w = 0.0f;
+                for (size_t i = 0; i < app.editor.line_count; ++i) {
+                    float lw = Line_GetColX(app.font_syntax, &app.editor.lines[i], app.editor.lines[i].size, CE_FONT_SIZE, CE_FONT_SPACING);
+                    if (lw > max_script_w) max_script_w = lw;
+                }
+                float script_box_w = fmaxf(max_script_w + gutter_space + 70.0f, 70.0f);
+                float script_box_h = fmaxf(total_script_h, line_height);
+                target_center = (Vector2){ (script_box_w - gutter_space) * 0.5f, script_box_h * 0.5f };
+                if (app.editor.line_count == 1 && app.editor.lines[0].size == 0) {
+                    target_center = (Vector2){ 0.0f, line_height * 0.5f };
+                }
+                float zoom_fit_x = ((float)screen_w * 0.70f) / script_box_w;
+                float zoom_fit_y = visible_h / script_box_h;
+                float base_zoom = fminf(zoom_fit_x, zoom_fit_y);
+                base_zoom = Clamp(base_zoom, 0.90f, 1.35f);
+                final_target_zoom = Clamp(base_zoom * app.user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
+            } else {
+                // Long script: clamp to local bounding context around cursor so camera remains readable and tracks cursor
+                int context_lines = 24;
+                int half_context = context_lines / 2;
+                int start_r = (int)app.editor.cursor_row - half_context;
+                int end_r = (int)app.editor.cursor_row + half_context;
+                if (start_r < 0) start_r = 0;
+                if (end_r >= (int)app.editor.line_count) end_r = (int)app.editor.line_count - 1;
+
+                float max_script_w = 0.0f;
+                for (int i = start_r; i <= end_r; ++i) {
+                    float lw = Line_GetColX(app.font_syntax, &app.editor.lines[i], app.editor.lines[i].size, CE_FONT_SIZE, CE_FONT_SPACING);
+                    if (lw > max_script_w) max_script_w = lw;
+                }
+                float script_box_w = fmaxf(max_script_w + gutter_space + 70.0f, 70.0f);
+                float cursor_y = (float)app.editor.cursor_row * line_height + line_height * 0.5f;
+                target_center = (Vector2){ (script_box_w - gutter_space) * 0.5f, cursor_y };
+
+                float zoom_fit_x = ((float)screen_w * 0.70f) / script_box_w;
+                float base_zoom = Clamp(zoom_fit_x, 0.90f, 1.25f);
+                final_target_zoom = Clamp(base_zoom * app.user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
             }
-            float script_box_w = fmaxf(max_script_w + gutter_space + 70.0f, 70.0f);
-            float script_box_h = fmaxf((float)app.editor.line_count * line_height, line_height);
-
-            target_center = (Vector2){ (script_box_w - gutter_space) * 0.5f, script_box_h * 0.5f };
-            if (app.editor.line_count == 1 && app.editor.lines[0].size == 0) {
-                target_center = (Vector2){ 0.0f, line_height * 0.5f };
-            }
-
-            float zoom_fit_x = ((float)screen_w * 0.70f) / script_box_w;
-            float zoom_fit_y = ((float)screen_h * 0.70f) / script_box_h;
-            float base_zoom = fminf(zoom_fit_x, zoom_fit_y);
-            final_target_zoom = Clamp(base_zoom * app.user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
-
         } else if (app.cam_mode == CAM_MODE_CURSOR_FOCUS) {
             target_center = (Vector2){ app.cursor.target.x + 20.0f, app.cursor.target.y + line_height * 0.5f };
             final_target_zoom = Clamp(1.30f * app.user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
-
         } else if (app.cam_mode == CAM_MODE_LINE_FOCUS) {
             float curr_line_w = Line_GetColX(app.font_syntax, &app.editor.lines[app.editor.cursor_row], app.editor.lines[app.editor.cursor_row].size, CE_FONT_SIZE, CE_FONT_SPACING);
             target_center = (Vector2){ curr_line_w * 0.5f, (float)app.editor.cursor_row * line_height + line_height * 0.5f };
-
             float needed_w = fmaxf(curr_line_w + gutter_space + 140.0f, 320.0f);
             float line_zoom = ((float)screen_w * 0.80f) / needed_w;
             final_target_zoom = Clamp(line_zoom * app.user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
@@ -444,12 +501,10 @@ int main(int argc, char **argv) {
                 Line *l = &app.editor.lines[r];
                 size_t c_start = (r == sr) ? sc : 0;
                 size_t c_end = (r == er) ? ec : l->size;
-
                 float x0 = Line_GetColX(app.font_syntax, l, c_start, CE_FONT_SIZE, CE_FONT_SPACING);
                 float x1 = Line_GetColX(app.font_syntax, l, c_end, CE_FONT_SIZE, CE_FONT_SPACING);
                 float w = x1 - x0;
                 if (w < 8.0f && r < er) w = 12.0f;
-
                 DrawRectangle((int)x0, (int)(r * line_height + 4.0f), (int)w, (int)(line_height - 4.0f), theme->selection);
             }
         }
@@ -469,7 +524,6 @@ int main(int argc, char **argv) {
             float bx0 = Line_GetColX(app.font_syntax, &app.editor.lines[bracket.row], bracket.col, CE_FONT_SIZE, CE_FONT_SPACING);
             float bx1 = Line_GetColX(app.font_syntax, &app.editor.lines[bracket.row], bracket.col + 1, CE_FONT_SIZE, CE_FONT_SPACING);
             Rectangle b_rect = { bx0, (float)bracket.row * line_height + 4.0f, bx1 - bx0, line_height - 6.0f };
-
             if (!theme->is_light) {
                 BeginBlendMode(BLEND_ADDITIVE);
                 DrawRectangleRounded(b_rect, 0.4f, 4, theme->bracket_match);
@@ -497,11 +551,9 @@ int main(int argc, char **argv) {
         Fx_DrawSpotlight(&app.fx, mouse_screen, screen_w, screen_h, theme);
         if (app.fx.enable_crt) Fx_DrawCRT(screen_w, screen_h);
         UI_DrawContextMenu(&app.menu, screen_w, screen_h, ui_scale, app.cam_mode, theme, app.font_body);
-
         if (app.show_help) {
             UI_DrawHelp(screen_w, screen_h, ui_scale, theme, app.font_body);
         }
-
         UI_DrawStatusBar(screen_h, ui_scale, app.cam_mode, app.camera.zoom, app.user_zoom_mult, theme, app.font_body);
 
         EndDrawing();
