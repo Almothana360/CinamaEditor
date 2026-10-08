@@ -41,13 +41,11 @@ Color Syntax_GetHighlightColor(const char *word, const Theme *theme) {
 BracketMatch Syntax_FindMatchingBracket(const Line *lines, size_t line_count, size_t cur_row, size_t cur_col) {
     BracketMatch match = { .found = false, .row = 0, .col = 0 };
     if (!lines || line_count == 0 || cur_row >= line_count) return match;
-
     const Line *cur_line = &lines[cur_row];
     if (cur_line->size == 0) return match;
 
     size_t c_idx = cur_col;
     if (c_idx >= cur_line->size && c_idx > 0) c_idx--;
-
     char c = cur_line->chars[c_idx];
     char target = 0;
     int direction = 0;
@@ -102,12 +100,10 @@ BracketMatch Syntax_FindMatchingBracket(const Line *lines, size_t line_count, si
 void Syntax_UpdateMultilineComments(Line *lines, size_t line_count) {
     if (!lines || line_count == 0) return;
     bool in_comment = false;
-
     for (size_t i = 0; i < line_count; ++i) {
         lines[i].starts_in_comment = in_comment;
         const char *p = lines[i].chars;
         if (!p) continue;
-
         size_t len = lines[i].size;
         size_t j = 0;
         while (j < len) {
@@ -144,17 +140,54 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
     if (!line || !line->chars || len == 0 || !theme) return;
     float offset_x = Line_GetColX(font, line, start, CE_FONT_SIZE, CE_FONT_SPACING);
 
-    char buf[256];
-    char *str = buf;
-    if (len >= sizeof(buf)) {
-        str = (char *)malloc(len + 1);
-        if (!str) return;
+    bool has_tab = false;
+    for (size_t i = 0; i < len; ++i) {
+        if (line->chars[start + i] == '\t') {
+            has_tab = true;
+            break;
+        }
     }
-    memcpy(str, &line->chars[start], len);
-    str[len] = '\0';
+
+    char stack_buf[512];
+    char *str = stack_buf;
+    if (!has_tab) {
+        if (len >= sizeof(stack_buf)) {
+            str = (char *)malloc(len + 1);
+            if (!str) return;
+        }
+        memcpy(str, &line->chars[start], len);
+        str[len] = '\0';
+    } else {
+        size_t vcol = 0;
+        for (size_t i = 0; i < start; ++i) {
+            if (line->chars[i] == '\t') {
+                vcol += CE_TAB_SIZE - (vcol % CE_TAB_SIZE);
+            } else {
+                vcol++;
+            }
+        }
+        size_t max_exp = len * CE_TAB_SIZE + 1;
+        if (max_exp >= sizeof(stack_buf)) {
+            str = (char *)malloc(max_exp);
+            if (!str) return;
+        }
+        size_t out_len = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if (line->chars[start + i] == '\t') {
+                size_t num_spaces = CE_TAB_SIZE - (vcol % CE_TAB_SIZE);
+                for (size_t s = 0; s < num_spaces; ++s) {
+                    str[out_len++] = ' ';
+                }
+                vcol += num_spaces;
+            } else {
+                str[out_len++] = line->chars[start + i];
+                vcol++;
+            }
+        }
+        str[out_len] = '\0';
+    }
 
     Vector2 pos = { start_x + offset_x, start_y };
-
     if (!theme->is_light && (color.r != theme->syn_default.r || color.g != theme->syn_default.g || color.b != theme->syn_default.b)) {
         BeginBlendMode(BLEND_ADDITIVE);
         Color glow = color;
@@ -165,14 +198,12 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
         DrawTextEx(font, str, (Vector2){ pos.x, pos.y + 1.0f }, CE_FONT_SIZE, CE_FONT_SPACING, glow);
         EndBlendMode();
     }
-
     DrawTextEx(font, str, pos, CE_FONT_SIZE, CE_FONT_SPACING, color);
-    if (str != buf) free(str);
+    if (str != stack_buf) free(str);
 }
 
 void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, const Theme *theme) {
     if (!line || !line->chars || line->size == 0 || !theme) return;
-
     const char *text = line->chars;
     size_t len = line->size;
     size_t i = 0;
@@ -198,12 +229,12 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             continue;
         }
 
-        if (i + 1 < len && text[i] == '/' && text[i + 1] == '/') {
+        if (i + 1 < len && text[i] == '/' && text[i] == '/') {
             Syntax_DrawToken(font, line, i, len - i, start_x, start_y, theme->syn_comment, theme);
             break;
         }
 
-        if (i + 1 < len && text[i] == '/' && text[i + 1] == '*') {
+        if (i + 1 < len && text[i] == '/' && text[i] == '*') {
             size_t token_start = i;
             i += 2;
             in_comment = true;
