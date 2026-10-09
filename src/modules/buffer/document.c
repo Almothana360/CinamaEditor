@@ -10,6 +10,56 @@
 static Document *g_active_doc = NULL;
 static float g_wheel_accum = 0.0f;
 
+// Splits a line at the cursor without injecting automatic indent or extra bracket tabs.
+static void Document_InsertRawNewline(Document *doc) {
+    if (!doc) return;
+
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
+    if (doc->line_count >= doc->line_capacity) {
+        size_t new_cap = (doc->line_capacity == 0) ? 32 : doc->line_capacity * 2;
+        Line *nl = (Line *)realloc(doc->lines, new_cap * sizeof(Line));
+        if (!nl) return;
+        doc->lines = nl;
+        doc->line_capacity = new_cap;
+    }
+
+    memmove(&doc->lines[doc->cursor_row + 2],
+            &doc->lines[doc->cursor_row + 1],
+            (doc->line_count - (doc->cursor_row + 1)) * sizeof(Line));
+
+    Line *curr = &doc->lines[doc->cursor_row];
+    Line *next = &doc->lines[doc->cursor_row + 1];
+    Line_Init(next);
+
+    size_t tail_len = (curr->size > doc->cursor_col) ? (curr->size - doc->cursor_col) : 0;
+    if (tail_len > 0 && curr->chars) {
+        Line_Reserve(next, tail_len);
+        if (next->chars) {
+            memcpy(next->chars, &curr->chars[doc->cursor_col], tail_len);
+            next->size = tail_len;
+            next->chars[next->size] = '\0';
+        }
+    } else {
+        Line_Reserve(next, 0);
+        if (next->chars) {
+            next->chars[0] = '\0';
+        }
+    }
+
+    curr->size = doc->cursor_col;
+    if (curr->chars) {
+        curr->chars[curr->size] = '\0';
+    }
+
+    doc->line_count++;
+    doc->cursor_row++;
+    doc->cursor_col = 0;
+    doc->modified = true;
+}
+
 // Event Bus Listener for pure text & cursor mutations
 static void Document_OnAction(EventType type, const void *payload) {
     if (type != EV_ACTION || !payload || !g_active_doc) return;
@@ -224,7 +274,6 @@ void Document_DeleteSelection(Document *doc) {
 
     if (sr == er) {
         Line *l = &doc->lines[sr];
-        // FIX 2: Ensure we don't manipulate NULL buffers
         if (l->chars) {
             memmove(&l->chars[sc], &l->chars[ec], l->size - ec);
             l->size -= (ec - sc);
@@ -236,9 +285,9 @@ void Document_DeleteSelection(Document *doc) {
         size_t tail_len = last->size - ec;
 
         first->size = sc;
-        if (tail_len > 0) {
+        if (tail_len > 0 && last->chars) {
             Line_AppendStr(first, &last->chars[ec], tail_len);
-        } else if (first->chars) { // FIX 2: Add safety check
+        } else if (first->chars) {
             first->chars[first->size] = '\0';
         }
 
@@ -261,8 +310,9 @@ void Document_CopySelection(const Document *doc) {
     Document_GetSelectionBounds(doc, &sr, &sc, &er, &ec);
 
     if (!doc->has_selection || (sr == er && sc == ec)) {
-        if (doc->cursor_row < doc->line_count && doc->lines[doc->cursor_row].chars) {
-            SetClipboardText(doc->lines[doc->cursor_row].chars);
+        if (doc->cursor_row < doc->line_count) {
+            const char *src = doc->lines[doc->cursor_row].chars ? doc->lines[doc->cursor_row].chars : "";
+            SetClipboardText(src);
         }
         return;
     }
@@ -330,16 +380,25 @@ void Document_PasteClipboard(Document *doc) {
     while (*clip) {
         if (*clip == '\r') {
             clip++;
+            if (*clip == '\n') {
+                clip++;
+            }
+            Document_InsertRawNewline(doc);
         } else if (*clip == '\n') {
-            Document_InsertNewline(doc);
-            clip++;
-        } else if (*clip == '\t') {
-            Document_InsertChar(doc, '\t');
+            Document_InsertRawNewline(doc);
             clip++;
         } else {
-            Document_InsertChar(doc, *clip++);
+            char c = *clip++;
+            if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+                doc->cursor_col = doc->lines[doc->cursor_row].size;
+            }
+            Line_InsertChar(&doc->lines[doc->cursor_row], doc->cursor_col, c);
+            doc->cursor_col++;
+            doc->modified = true;
         }
     }
+
+    Syntax_UpdateMultilineComments(doc->lines, doc->line_count);
 }
 
 void Document_InsertChar(Document *doc, char c) {
@@ -348,7 +407,6 @@ void Document_InsertChar(Document *doc, char c) {
         Document_DeleteSelection(doc);
     }
 
-    // FIX 2: Clamp prior to insertion
     if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
         doc->cursor_col = doc->lines[doc->cursor_row].size;
     }
@@ -365,7 +423,6 @@ void Document_InsertNewline(Document *doc) {
         Document_DeleteSelection(doc);
     }
 
-    // FIX 2: Ensure we're in bounds before evaluating characters
     if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
         doc->cursor_col = doc->lines[doc->cursor_row].size;
     }
@@ -421,7 +478,6 @@ void Document_InsertNewline(Document *doc) {
         next->size += tail_len;
     }
 
-    // FIX 2: Ensure memory exists before writing string terminators to it
     if (next->chars) {
         next->chars[next->size] = '\0';
     }
@@ -446,7 +502,6 @@ void Document_Backspace(Document *doc) {
         return;
     }
 
-    // FIX 2: Clamp bounds before backwards operations
     if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
         doc->cursor_col = doc->lines[doc->cursor_row].size;
     }

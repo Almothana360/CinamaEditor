@@ -111,10 +111,7 @@ static void App_Init(AppEngine *app, const char *initial_file) {
             "\treturn 0;\n"
             "}\n";
 
-        // FIX 1: We use Document_Free here instead of Document_InitEmpty to avoid
-        // artificially shifting the buffer by 1 line which pushes the cursor out of bounds!
         Document_Free(&app->doc);
-
         const char *p = sample;
         const char *line_start = p;
         while (*p) {
@@ -138,9 +135,12 @@ static void App_Init(AppEngine *app, const char *initial_file) {
         app->doc.modified = false;
         Syntax_UpdateMultilineComments(app->doc.lines, app->doc.line_count);
     }
+
+    Camera_SnapToTarget();
 }
 
 static void App_Close(AppEngine *app) {
+    Camera_Close();
     Fx_Close(&app->fx);
     Audio_Close(&app->audio);
     Document_Free(&app->doc);
@@ -185,15 +185,29 @@ int main(int argc, char **argv) {
         int screen_w = GetScreenWidth();
         int screen_h = GetScreenHeight();
 
+        // 1. Process inputs via event pipeline
+        Input_Update();
+
+        // 2. Advance visual and physics modules
+        Cursor_Update(&app.cursor, dt, &app.doc, app.font_syntax, line_height);
+        Camera_Update(dt);
+        Fx_Update(&app.fx, dt);
+        Combo_Update(&app.combo, dt);
+
+        // 3. Inject shake trauma into the camera
+        float shake_intensity = app.fx.shake_trauma * app.fx.shake_trauma;
+        float shake_mag = shake_intensity * (app.combo.streak > 25 ? 24.0f : 14.0f);
+        Vector2 shake_offset = {
+            ((float)GetRandomValue(-100, 100) / 100.0f) * shake_mag,
+            ((float)GetRandomValue(-100, 100) / 100.0f) * shake_mag
+        };
+        Camera_SetShakeOffset(shake_offset);
+
         Camera2D cam = Camera_GetState();
         Vector2 mouse_screen = GetMousePosition();
         Vector2 mouse_world = GetScreenToWorld2D(mouse_screen, cam);
 
-        Fx_Update(&app.fx, dt);
-        Combo_Update(&app.combo, dt);
-
-        Input_Update();
-
+        // 4. Context menu handling
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
             ContextMenu_Open(&app.menu, mouse_screen);
         }
@@ -208,6 +222,7 @@ int main(int argc, char **argv) {
             }
         }
 
+        // 5. Mouse selection handling
         bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
         if (!app.menu.active) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -269,17 +284,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        Cursor_Update(&app.cursor, dt, &app.doc, app.font_syntax, line_height);
-        Camera_Update(dt);
-
-        float shake_intensity = app.fx.shake_trauma * app.fx.shake_trauma;
-        float shake_mag = shake_intensity * (app.combo.streak > 25 ? 24.0f : 14.0f);
-        Vector2 shake_offset = {
-            ((float)GetRandomValue(-100, 100) / 100.0f) * shake_mag,
-            ((float)GetRandomValue(-100, 100) / 100.0f) * shake_mag
-        };
-        Camera_SetShakeOffset(shake_offset);
-
+        // 6. Multi-layer rendering pipeline
         RenderContext ctx = {
             .doc = &app.doc,
             .cursor = &app.cursor,
