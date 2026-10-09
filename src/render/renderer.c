@@ -1,6 +1,11 @@
 #include "render/renderer.h"
+#include "render/canvas.h"
 #include "buffer/syntax.h"
 #include "buffer/line.h"
+#include "ui/menu_bar.h"
+#include "ui/sidebar.h"
+#include "ui/palette.h"
+#include "ui/completion.h"
 #include "raymath.h"
 #include <stdio.h>
 #include <math.h>
@@ -11,13 +16,11 @@ void Renderer_Draw(const RenderContext *ctx) {
     float line_height = CE_FONT_SIZE + 8.0f;
     float gutter_space = 45.0f;
 
-    // --- Viewport Culling Bounds Calculation ---
-    // Calculate the top and bottom visible world-space Y coordinates
+    // Viewport Culling Bounds Calculation
     float zoom = ctx->camera.zoom > 0.001f ? ctx->camera.zoom : 1.0f;
     float view_top_y = ctx->camera.target.y - (ctx->camera.offset.y / zoom);
     float view_bottom_y = ctx->camera.target.y + (((float)ctx->screen_h - ctx->camera.offset.y) / zoom);
 
-    // Compute the visible row index range with a 2-line safety padding
     int start_row = (int)floorf(view_top_y / line_height) - 2;
     int end_row = (int)ceilf(view_bottom_y / line_height) + 2;
 
@@ -28,7 +31,6 @@ void Renderer_Draw(const RenderContext *ctx) {
 
     bool has_visible_lines = (ctx->doc->line_count > 0 && ctx->doc->lines != NULL && start_row <= end_row);
 
-    // Only search for matching bracket if the cursor is near or within the visible view
     BracketMatch bracket = { .found = false, .row = 0, .col = 0 };
     if (has_visible_lines && ctx->doc->cursor_row < ctx->doc->line_count) {
         if ((int)ctx->doc->cursor_row >= start_row - 2 && (int)ctx->doc->cursor_row <= end_row + 2) {
@@ -47,7 +49,6 @@ void Renderer_Draw(const RenderContext *ctx) {
         size_t sr, sc, er, ec;
         Document_GetSelectionBounds(ctx->doc, &sr, &sc, &er, &ec);
 
-        // Clamp selection to the visible window to avoid looping offscreen lines
         size_t sel_start = (sr < (size_t)start_row) ? (size_t)start_row : sr;
         size_t sel_end = (er > (size_t)end_row) ? (size_t)end_row : er;
 
@@ -84,7 +85,7 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
-    // 4. Bracket Match Highlight (Drawn only if within visible rows)
+    // 4. Bracket Match Highlight
     if (bracket.found && has_visible_lines) {
         if ((int)bracket.row >= start_row && (int)bracket.row <= end_row) {
             float bx0 = Line_GetColX(ctx->font_syntax, &ctx->doc->lines[bracket.row], bracket.col, CE_FONT_SIZE, CE_FONT_SPACING);
@@ -100,7 +101,7 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
-    // 5. World Visual Effects (Additive Sparks & Glows)
+    // 5. World Visual Effects
     if (ctx->fx) {
         Fx_DrawWorld(ctx->fx);
     }
@@ -119,7 +120,7 @@ void Renderer_Draw(const RenderContext *ctx) {
 
     EndMode2D();
 
-    // --- Screen-Space UI Elements Pass ---
+    // --- Screen-Space Anchored Canvas UI Pass ---
     UI_DrawMinimap(ctx->doc, ctx->camera, ctx->screen_w, ctx->screen_h, line_height, ctx->ui_scale, ctx->theme);
 
     if (ctx->combo) {
@@ -133,6 +134,9 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
+    // Docked Left File Explorer Sidebar
+    Sidebar_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
+
     if (ctx->menu) {
         UI_DrawContextMenu(ctx->menu, ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->cam_mode, ctx->theme, ctx->font_body);
     }
@@ -142,6 +146,15 @@ void Renderer_Draw(const RenderContext *ctx) {
     }
 
     UI_DrawStatusBar(ctx->screen_h, ctx->ui_scale, ctx->cam_mode, ctx->camera.zoom, ctx->zoom_mult, ctx->theme, ctx->font_body);
+
+    // Floating Rounded Menu Bar
+    MenuBar_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
+
+    // Floating Code Completion Popup (Anchored directly near text cursor)
+    Completion_Draw(ctx->camera, ctx->doc, ctx->font_syntax, ctx->font_body, ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme);
+
+    // Center-Anchored Floating Command Palette (Modal Top Layer)
+    Palette_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
 
     EndDrawing();
 }

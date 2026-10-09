@@ -9,6 +9,7 @@
 #include "core/event.h"
 
 #include "modules/buffer/document.h"
+#include "modules/project/workspace.h"
 #include "modules/io/disk.h"
 #include "modules/input/input.h"
 #include "modules/view/camera.h"
@@ -18,10 +19,15 @@
 #include "fx/audio.h"
 #include "fx/fx.h"
 #include "ui/ui.h"
+#include "ui/menu_bar.h"
+#include "ui/sidebar.h"
+#include "ui/palette.h"
+#include "ui/completion.h"
 #include "render/renderer.h"
 
 typedef struct {
     Document doc;
+    Workspace workspace;
     SmoothCursor cursor;
     AudioSystem audio;
     FxSystem fx;
@@ -52,11 +58,17 @@ static void App_OnAction(EventType type, const void *payload) {
             break;
         }
         case ACTION_CYCLE_UI_SCALE: app->ui_scale_idx = (app->ui_scale_idx + 1) % Theme_GetUIScaleCount(); break;
+        case ACTION_LOAD: {
+            if (app->doc.file_path[0] != '\0' && FileExists(app->doc.file_path)) {
+                Workspace_OpenFile(&app->workspace, &app->doc, app->doc.file_path);
+            }
+            break;
+        }
         default: break;
     }
 }
 
-static void App_Init(AppEngine *app, const char *initial_file) {
+static void App_Init(AppEngine *app, const char *initial_arg) {
     memset(app, 0, sizeof(AppEngine));
     g_app_instance = app;
 
@@ -81,6 +93,7 @@ static void App_Init(AppEngine *app, const char *initial_file) {
 
     // Connect Modules to Event Bus
     Document_Init(&app->doc);
+    Workspace_Init(&app->workspace);
     Disk_Init(&app->doc);
     Cursor_Init(&app->cursor, line_height);
     Camera_Init(&app->doc, app->font_syntax);
@@ -89,6 +102,10 @@ static void App_Init(AppEngine *app, const char *initial_file) {
     Fx_Init(&app->fx, &app->doc, &app->combo, app->font_syntax);
     Syntax_Init(&app->doc, app->font_syntax);
     ContextMenu_Init(&app->menu);
+    MenuBar_Init();
+    Sidebar_Init(&app->workspace, &app->doc);
+    Palette_Init(&app->workspace, &app->doc);
+    Completion_Init(&app->doc, app->font_syntax);
 
     Event_Subscribe(EV_ACTION, App_OnAction);
 
@@ -96,9 +113,54 @@ static void App_Init(AppEngine *app, const char *initial_file) {
     ThemeChangedPayload tp = { app->theme_idx, Theme_Get(app->theme_idx) };
     Event_Emit(EV_THEME_CHANGED, &tp);
 
-    if (initial_file) {
-        Disk_LoadFile(&app->doc, initial_file);
-    } else {
+    // Command-Line Argument / Workspace Resolution
+    bool file_loaded = false;
+    if (initial_arg && initial_arg[0] != '\0') {
+        if (DirectoryExists(initial_arg)) {
+            Workspace_SetRoot(&app->workspace, initial_arg);
+
+            int count = 0;
+            const WorkspaceEntry *entries = Workspace_GetEntries(&app->workspace, &count);
+            int first_file_idx = -1;
+            for (int i = 0; i < count; ++i) {
+                if (!entries[i].is_directory) {
+                    first_file_idx = i;
+                    break;
+                }
+            }
+
+            if (first_file_idx >= 0) {
+                file_loaded = Workspace_OpenFileIndex(&app->workspace, &app->doc, first_file_idx);
+            } else {
+                Document_InitEmpty(&app->doc);
+                char default_path[CE_MAX_PATH];
+                snprintf(default_path, sizeof(default_path), "%s/main.c", app->workspace.root_path);
+                strncpy(app->doc.file_path, default_path, sizeof(app->doc.file_path) - 1);
+                app->doc.modified = false;
+                Syntax_SetLanguageByFilename(app->doc.file_path);
+                file_loaded = true;
+            }
+        } else if (FileExists(initial_arg)) {
+            const char *parent_dir = GetDirectoryPath(initial_arg);
+            if (!parent_dir || parent_dir[0] == '\0' || strcmp(parent_dir, ".") == 0) {
+                Workspace_SetRoot(&app->workspace, GetWorkingDirectory());
+            } else {
+                Workspace_SetRoot(&app->workspace, parent_dir);
+            }
+            file_loaded = Workspace_OpenFile(&app->workspace, &app->doc, initial_arg);
+        } else {
+            Workspace_SetRoot(&app->workspace, GetWorkingDirectory());
+            Document_InitEmpty(&app->doc);
+            strncpy(app->doc.file_path, initial_arg, sizeof(app->doc.file_path) - 1);
+            app->doc.modified = false;
+            Syntax_SetLanguageByFilename(app->doc.file_path);
+            file_loaded = true;
+        }
+    }
+
+    if (!file_loaded) {
+        Workspace_SetRoot(&app->workspace, GetWorkingDirectory());
+
         const char *sample =
             "// Welcome to Cinema Editor (CE)!\n"
             "// Auto-tabs inherit leading line whitespace upon Enter.\n"
@@ -140,9 +202,13 @@ static void App_Init(AppEngine *app, const char *initial_file) {
 }
 
 static void App_Close(AppEngine *app) {
+    Completion_Free();
+    Palette_Free();
+    MenuBar_Close();
     Camera_Close();
     Fx_Close(&app->fx);
     Audio_Close(&app->audio);
+    Workspace_Free(&app->workspace);
     Document_Free(&app->doc);
     EventBus_Free();
 }
@@ -184,17 +250,43 @@ int main(int argc, char **argv) {
         float dt = GetFrameTime();
         int screen_w = GetScreenWidth();
         int screen_h = GetScreenHeight();
+        float ui_scale = Theme_GetUIScale(app.ui_scale_idx);
 
-        // 1. Process inputs via event pipeline
-        Input_Update();
+        Vector2 mouse_screen = GetMousePosition();
 
-        // 2. Advance visual and physics modules
+        // 1. Process Command Palette modal input (takes highest modal priority)
+        bool palette_was_open = Palette_IsOpen();
+        bool palette_consumed = Palette_Update(mouse_screen, screen_w, screen_h, ui_scale);
+        bool palette_active = Palette_IsOpen();
+
+        // 2. Dismiss completion if modal palette or context menu is active
+        if (palette_active || app.menu.active) {
+            Completion_Close();
+        }
+
+        // 3. Process Code Completion input (intercepts Up, Down, Tab, Enter, Esc when suggestions are visible)
+        bool comp_consumed = false;
+        if (!palette_was_open && !palette_active) {
+            comp_consumed = Completion_Update(&app.doc, ui_scale);
+        }
+
+        // 4. Process editor inputs via event pipeline
+        if (!palette_was_open && !palette_active && !comp_consumed) {
+            Input_Update();
+        }
+
+        // 5. Check and refresh code completion trigger based on active word under cursor
+        if (!palette_active && !app.menu.active) {
+            Completion_CheckTrigger(&app.doc, app.font_syntax);
+        }
+
+        // 6. Advance visual and physics modules
         Cursor_Update(&app.cursor, dt, &app.doc, app.font_syntax, line_height);
         Camera_Update(dt);
         Fx_Update(&app.fx, dt);
         Combo_Update(&app.combo, dt);
 
-        // 3. Inject shake trauma into the camera
+        // 7. Inject shake trauma into the camera
         float shake_intensity = app.fx.shake_trauma * app.fx.shake_trauma;
         float shake_mag = shake_intensity * (app.combo.streak > 25 ? 24.0f : 14.0f);
         Vector2 shake_offset = {
@@ -203,13 +295,31 @@ int main(int argc, char **argv) {
         };
         Camera_SetShakeOffset(shake_offset);
 
+        // 8. Compute camera state with sidebar horizontal viewport offset
         Camera2D cam = Camera_GetState();
-        Vector2 mouse_screen = GetMousePosition();
+        float sidebar_w = Sidebar_GetWidth(ui_scale);
+        if (sidebar_w > 0.0f) {
+            cam.offset.x = ((float)screen_w + sidebar_w) * 0.5f;
+        } else {
+            cam.offset.x = (float)screen_w * 0.5f;
+        }
+
         Vector2 mouse_world = GetScreenToWorld2D(mouse_screen, cam);
 
-        // 4. Context menu handling
+        // 9. Screen UI Input Handling (Menu bar and Sidebar intercept before text selection)
+        bool menu_consumed = false;
+        bool sidebar_consumed = false;
+
+        if (!palette_active) {
+            menu_consumed = MenuBar_Update(mouse_screen, screen_w, ui_scale);
+            sidebar_consumed = Sidebar_Update(mouse_screen, screen_w, screen_h, ui_scale);
+        }
+
+        // 10. Context menu handling
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-            ContextMenu_Open(&app.menu, mouse_screen);
+            if (!menu_consumed && !sidebar_consumed && !palette_active) {
+                ContextMenu_Open(&app.menu, mouse_screen);
+            }
         }
 
         if (app.menu.active) {
@@ -222,9 +332,14 @@ int main(int argc, char **argv) {
             }
         }
 
-        // 5. Mouse selection handling
+        // 11. Mouse selection handling (isolated from menu bar, sidebar, palette, and completion popup)
+        bool in_comp = Completion_ContainsPoint(mouse_screen, cam, &app.doc, app.font_syntax, screen_w, screen_h, ui_scale);
         bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-        if (!app.menu.active) {
+        bool in_text_area = (!app.menu.active && !menu_consumed && !sidebar_consumed && !palette_active && !in_comp &&
+                             mouse_screen.y > MenuBar_GetHeight(ui_scale) &&
+                             (!Sidebar_IsOpen() || mouse_screen.x > sidebar_w));
+
+        if (in_text_area) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 int r = (int)((mouse_world.y - 4.0f) / line_height);
                 if (r < 0) r = 0;
@@ -284,11 +399,11 @@ int main(int argc, char **argv) {
             }
         }
 
-        // 6. Multi-layer rendering pipeline
+        // 12. Multi-layer rendering pipeline
         RenderContext ctx = {
             .doc = &app.doc,
             .cursor = &app.cursor,
-            .camera = Camera_GetState(),
+            .camera = cam,
             .cam_mode = Camera_GetMode(),
             .zoom_mult = Camera_GetUserZoomMult(),
             .fx = &app.fx,
@@ -296,7 +411,7 @@ int main(int argc, char **argv) {
             .combo = &app.combo,
             .show_help = app.show_help,
             .theme = Theme_Get(app.theme_idx),
-            .ui_scale = Theme_GetUIScale(app.ui_scale_idx),
+            .ui_scale = ui_scale,
             .font_body = app.font_body,
             .font_syntax = app.font_syntax,
             .screen_w = screen_w,

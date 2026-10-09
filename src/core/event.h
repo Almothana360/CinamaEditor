@@ -31,6 +31,7 @@ typedef enum {
     ACTION_REDO,
     ACTION_SAVE,
     ACTION_LOAD,
+    ACTION_CHANGE_DIR,
     ACTION_SCROLL,
 
     // UI & View Commands
@@ -58,6 +59,7 @@ typedef enum {
     EV_COMBO_HIT,
     EV_TOKEN_COMPLETED,
     EV_THEME_CHANGED,
+    EV_WORKSPACE_CHANGED,
     EV_COUNT
 } EventType;
 
@@ -97,6 +99,11 @@ typedef struct {
     int theme_idx;
     const void *theme;
 } ThemeChangedPayload;
+
+typedef struct {
+    const char *root_path;
+    int entry_count;
+} WorkspaceChangedPayload;
 
 // Global Event Callback Signature
 typedef void (*EventCallback)(EventType type, const void *payload);

@@ -5,6 +5,7 @@
 #include "core/types.h"
 #include "core/theme.h"
 #include "buffer/line.h"
+#include "buffer/grammar.h"
 #include "modules/buffer/document.h"
 #include <stddef.h>
 #include <stdbool.h>
@@ -15,12 +16,17 @@ typedef struct {
     size_t col;
 } BracketMatch;
 
-// Hooks syntax checking into the Event Bus
+// Lifecycle & Active Language Selection
 void Syntax_Init(const Document *doc, Font font);
+void Syntax_SetLanguage(const LanguageDef *lang);
+const LanguageDef *Syntax_GetLanguage(void);
+void Syntax_SetLanguageByFilename(const char *filepath);
 
+// Token classification (uses active LanguageDef or explicit LanguageDef)
 bool Syntax_IsKeyword(const char *word);
 bool Syntax_IsType(const char *word);
 Color Syntax_GetHighlightColor(const char *word, const Theme *theme);
+
 BracketMatch Syntax_FindMatchingBracket(const Line *lines, size_t line_count, size_t cur_row, size_t cur_col);
 void Syntax_UpdateMultilineComments(Line *lines, size_t line_count);
 

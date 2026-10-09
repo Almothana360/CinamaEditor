@@ -19,5 +19,12 @@ add_executable(CinamaEditor src/main.c
         src/modules/view/camera.c
         src/modules/view/cursor.c
         src/modules/buffer/document.c
-        src/modules/io/disk.c)
+        src/modules/io/disk.c
+        src/render/canvas.c
+        src/ui/menu_bar.c
+        src/buffer/grammar.c
+        src/modules/project/workspace.c
+        src/ui/sidebar.c
+        src/ui/palette.c
+        src/ui/completion.c)
 target_link_libraries(CinamaEditor raylib m winmm)

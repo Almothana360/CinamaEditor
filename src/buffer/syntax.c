@@ -1,4 +1,5 @@
 #include "buffer/syntax.h"
+#include "buffer/grammar.h"
 #include "core/event.h"
 #include <string.h>
 #include <stdlib.h>
@@ -7,13 +8,50 @@
 static const Document *g_syn_doc = NULL;
 static const Theme *g_syn_theme = NULL;
 static Font g_syn_font = {0};
+static const LanguageDef *g_active_lang = NULL;
+
+const LanguageDef *Syntax_GetLanguage(void) {
+    if (!g_active_lang) {
+        g_active_lang = Grammar_GetDefault();
+    }
+    return g_active_lang;
+}
+
+void Syntax_SetLanguage(const LanguageDef *lang) {
+    g_active_lang = lang ? lang : Grammar_GetDefault();
+}
+
+void Syntax_SetLanguageByFilename(const char *filepath) {
+    g_active_lang = Grammar_GetByFilename(filepath);
+}
+
+bool Syntax_IsKeyword(const char *word) {
+    return Grammar_IsKeyword(Syntax_GetLanguage(), word);
+}
+
+bool Syntax_IsType(const char *word) {
+    return Grammar_IsType(Syntax_GetLanguage(), word);
+}
+
+Color Syntax_GetHighlightColor(const char *word, const Theme *theme) {
+    if (!theme || !word) return BLANK;
+    const LanguageDef *lang = Syntax_GetLanguage();
+    if (Grammar_IsKeyword(lang, word)) return theme->syn_keyword;
+    if (Grammar_IsType(lang, word))    return theme->syn_type;
+    return BLANK;
+}
 
 static void Syntax_OnEvent(EventType type, const void *payload) {
     if (type == EV_THEME_CHANGED) {
-        const ThemeChangedPayload *p = payload;
+        const ThemeChangedPayload *p = (const ThemeChangedPayload *)payload;
         g_syn_theme = (const Theme *)p->theme;
+    } else if (type == EV_FILE_MODIFIED) {
+        if (g_syn_doc && g_syn_doc->file_path[0] != '\0') {
+            Syntax_SetLanguageByFilename(g_syn_doc->file_path);
+            Syntax_UpdateMultilineComments(g_syn_doc->lines, g_syn_doc->line_count);
+        }
     } else if (type == EV_ACTION) {
-        const ActionPayload *p = payload;
+        const ActionPayload *p = (const ActionPayload *)payload;
         if (p->action == ACTION_INSERT_CHAR && p->char_data >= 32 && p->char_data <= 126) {
             if (!g_syn_doc || !g_syn_theme) return;
             char token[128];
@@ -32,45 +70,17 @@ static void Syntax_OnEvent(EventType type, const void *payload) {
 void Syntax_Init(const Document *doc, Font font) {
     g_syn_doc = doc;
     g_syn_font = font;
+
+    Grammar_Init();
+    if (doc && doc->file_path[0] != '\0') {
+        Syntax_SetLanguageByFilename(doc->file_path);
+    } else {
+        Syntax_SetLanguage(Grammar_GetDefault());
+    }
+
     Event_Subscribe(EV_THEME_CHANGED, Syntax_OnEvent);
     Event_Subscribe(EV_ACTION, Syntax_OnEvent);
-}
-
-// ... Rest of your existing Syntax functions ...
-
-bool Syntax_IsKeyword(const char *word) {
-    if (!word) return false;
-    static const char *kw[] = {
-        "auto", "break", "case", "const", "continue", "default", "do",
-        "else", "enum", "extern", "for", "goto", "if", "inline",
-        "register", "restrict", "return", "sizeof", "static", "struct",
-        "switch", "typedef", "union", "volatile", "while", NULL
-    };
-    for (int i = 0; kw[i]; ++i) {
-        if (strcmp(word, kw[i]) == 0) return true;
-    }
-    return false;
-}
-
-bool Syntax_IsType(const char *word) {
-    if (!word) return false;
-    static const char *types[] = {
-        "void", "char", "short", "int", "long", "float", "double",
-        "signed", "unsigned", "bool", "size_t", "ssize_t", "uint8_t",
-        "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t",
-        "int32_t", "int64_t", "FILE", "Vector2", "Color", "Font", NULL
-    };
-    for (int i = 0; types[i]; ++i) {
-        if (strcmp(word, types[i]) == 0) return true;
-    }
-    return false;
-}
-
-Color Syntax_GetHighlightColor(const char *word, const Theme *theme) {
-    if (!theme || !word) return BLANK;
-    if (Syntax_IsKeyword(word)) return theme->syn_keyword;
-    if (Syntax_IsType(word))    return theme->syn_type;
-    return BLANK;
+    Event_Subscribe(EV_FILE_MODIFIED, Syntax_OnEvent);
 }
 
 BracketMatch Syntax_FindMatchingBracket(const Line *lines, size_t line_count, size_t cur_row, size_t cur_col) {
@@ -134,6 +144,16 @@ BracketMatch Syntax_FindMatchingBracket(const Line *lines, size_t line_count, si
 
 void Syntax_UpdateMultilineComments(Line *lines, size_t line_count) {
     if (!lines || line_count == 0) return;
+    const LanguageDef *lang = Syntax_GetLanguage();
+
+    const char *sc = (lang && lang->single_comment[0]) ? lang->single_comment : "//";
+    size_t sc_len = strlen(sc);
+    const char *mc_start = (lang && lang->multi_comment_start[0]) ? lang->multi_comment_start : "/*";
+    size_t mc_s_len = strlen(mc_start);
+    const char *mc_end = (lang && lang->multi_comment_end[0]) ? lang->multi_comment_end : "*/";
+    size_t mc_e_len = strlen(mc_end);
+    bool has_mc = (mc_s_len > 0 && mc_e_len > 0);
+
     bool in_comment = false;
     for (size_t i = 0; i < line_count; ++i) {
         lines[i].starts_in_comment = in_comment;
@@ -143,19 +163,19 @@ void Syntax_UpdateMultilineComments(Line *lines, size_t line_count) {
         size_t j = 0;
         while (j < len) {
             if (in_comment) {
-                if (j + 1 < len && p[j] == '*' && p[j + 1] == '/') {
+                if (has_mc && j + mc_e_len <= len && strncmp(&p[j], mc_end, mc_e_len) == 0) {
                     in_comment = false;
-                    j += 2;
+                    j += mc_e_len;
                 } else {
                     j++;
                 }
             } else {
-                if (j + 1 < len && p[j] == '/' && p[j + 1] == '*') {
+                if (has_mc && j + mc_s_len <= len && strncmp(&p[j], mc_start, mc_s_len) == 0) {
                     in_comment = true;
-                    j += 2;
-                } else if (j + 1 < len && p[j] == '/' && p[j + 1] == '/') {
+                    j += mc_s_len;
+                } else if (sc_len > 0 && j + sc_len <= len && strncmp(&p[j], sc, sc_len) == 0) {
                     break;
-                } else if (p[j] == '"' || p[j] == '\'') {
+                } else if (p[j] == '"' || p[j] == '\'' || p[j] == '`') {
                     char quote = p[j++];
                     while (j < len && p[j] != quote) {
                         if (p[j] == '\\' && j + 1 < len) j++;
@@ -243,13 +263,22 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
     size_t len = line->size;
     size_t i = 0;
     bool in_comment = line->starts_in_comment;
+    const LanguageDef *lang = Syntax_GetLanguage();
+
+    const char *sc = (lang && lang->single_comment[0]) ? lang->single_comment : "//";
+    size_t sc_len = strlen(sc);
+    const char *mc_start = (lang && lang->multi_comment_start[0]) ? lang->multi_comment_start : "/*";
+    size_t mc_s_len = strlen(mc_start);
+    const char *mc_end = (lang && lang->multi_comment_end[0]) ? lang->multi_comment_end : "*/";
+    size_t mc_e_len = strlen(mc_end);
+    bool has_mc = (mc_s_len > 0 && mc_e_len > 0);
 
     while (i < len) {
         if (in_comment) {
             size_t token_start = i;
             while (i < len) {
-                if (i + 1 < len && text[i] == '*' && text[i + 1] == '/') {
-                    i += 2;
+                if (has_mc && i + mc_e_len <= len && strncmp(&text[i], mc_end, mc_e_len) == 0) {
+                    i += mc_e_len;
                     in_comment = false;
                     break;
                 }
@@ -264,18 +293,20 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             continue;
         }
 
-        if (i + 1 < len && text[i] == '/' && text[i] == '/') {
+        // Single-line comment check
+        if (sc_len > 0 && i + sc_len <= len && strncmp(&text[i], sc, sc_len) == 0) {
             Syntax_DrawToken(font, line, i, len - i, start_x, start_y, theme->syn_comment, theme);
             break;
         }
 
-        if (i + 1 < len && text[i] == '/' && text[i] == '*') {
+        // Multi-line comment start check
+        if (has_mc && i + mc_s_len <= len && strncmp(&text[i], mc_start, mc_s_len) == 0) {
             size_t token_start = i;
-            i += 2;
+            i += mc_s_len;
             in_comment = true;
             while (i < len) {
-                if (i + 1 < len && text[i] == '*' && text[i + 1] == '/') {
-                    i += 2;
+                if (i + mc_e_len <= len && strncmp(&text[i], mc_end, mc_e_len) == 0) {
+                    i += mc_e_len;
                     in_comment = false;
                     break;
                 }
@@ -285,14 +316,28 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             continue;
         }
 
-        if (text[i] == '#') {
+        // Preprocessor (C/C++ #include, etc., provided '#' is not the single-line comment char)
+        if (text[i] == '#' && strcmp(sc, "#") != 0) {
             size_t token_start = i;
             while (i < len && !isspace((unsigned char)text[i])) i++;
             Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_preproc, theme);
             continue;
         }
 
-        if (text[i] == '"' || text[i] == '\'') {
+        // String and character literals
+        bool is_delim = false;
+        if (lang && lang->string_delim_count > 0) {
+            for (int d = 0; d < lang->string_delim_count; ++d) {
+                if (text[i] == lang->string_delims[d]) {
+                    is_delim = true;
+                    break;
+                }
+            }
+        } else {
+            is_delim = (text[i] == '"' || text[i] == '\'');
+        }
+
+        if (is_delim) {
             char quote = text[i];
             size_t token_start = i++;
             while (i < len && text[i] != quote) {
@@ -301,17 +346,19 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             }
             if (i < len) i++;
             Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y,
-                             quote == '"' ? theme->syn_string : theme->syn_number, theme);
+                             (quote == '"' || quote == '`') ? theme->syn_string : theme->syn_number, theme);
             continue;
         }
 
+        // Numbers
         if (isdigit((unsigned char)text[i])) {
             size_t token_start = i;
-            while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '.')) i++;
+            while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '.' || text[i] == 'x' || text[i] == 'X')) i++;
             Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_number, theme);
             continue;
         }
 
+        // Identifiers (keywords, types, identifiers)
         if (isalpha((unsigned char)text[i]) || text[i] == '_') {
             size_t token_start = i;
             while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '_')) i++;
@@ -321,8 +368,8 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
                 memcpy(word, &text[token_start], wlen);
                 word[wlen] = '\0';
                 Color col = theme->syn_default;
-                if (Syntax_IsKeyword(word)) col = theme->syn_keyword;
-                else if (Syntax_IsType(word)) col = theme->syn_type;
+                if (Grammar_IsKeyword(lang, word)) col = theme->syn_keyword;
+                else if (Grammar_IsType(lang, word)) col = theme->syn_type;
                 Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, col, theme);
             } else {
                 Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, theme->syn_default, theme);
@@ -330,6 +377,7 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             continue;
         }
 
+        // Punctuation / Operators
         Syntax_DrawToken(font, line, i, 1, start_x, start_y, theme->syn_default, theme);
         i++;
     }
