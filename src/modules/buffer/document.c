@@ -1,4 +1,5 @@
 #include "modules/buffer/document.h"
+#include "modules/buffer/history.h"
 #include "core/event.h"
 #include "buffer/syntax.h"
 #include "raymath.h"
@@ -8,9 +9,271 @@
 #include <ctype.h>
 
 static Document *g_active_doc = NULL;
+static History g_history;
 static float g_wheel_accum = 0.0f;
 
-// Splits a line at the cursor without injecting automatic indent or extra bracket tabs.
+// Replaces a slice of lines [start_row ... start_row + count_to_remove - 1]
+// with count_to_insert fresh lines from new_data strings.
+static void Document_ReplaceLines(Document *doc, size_t start_row, size_t count_to_remove, char **new_data, size_t count_to_insert) {
+    if (!doc) return;
+    if (start_row > doc->line_count) start_row = doc->line_count;
+    if (start_row + count_to_remove > doc->line_count) {
+        count_to_remove = doc->line_count - start_row;
+    }
+
+    // 1. Free memory of lines being removed
+    for (size_t i = 0; i < count_to_remove; ++i) {
+        Line_Free(&doc->lines[start_row + i]);
+    }
+
+    // 2. Adjust capacity and shift lines if document length changes
+    if (count_to_insert > count_to_remove) {
+        size_t diff = count_to_insert - count_to_remove;
+        size_t needed = doc->line_count + diff;
+        if (needed > doc->line_capacity) {
+            size_t new_cap = (doc->line_capacity == 0) ? 32 : doc->line_capacity * 2;
+            while (new_cap < needed) new_cap *= 2;
+            Line *nl = (Line *)realloc(doc->lines, new_cap * sizeof(Line));
+            if (!nl) return;
+            doc->lines = nl;
+            doc->line_capacity = new_cap;
+        }
+        size_t tail_count = doc->line_count - (start_row + count_to_remove);
+        if (tail_count > 0) {
+            memmove(&doc->lines[start_row + count_to_insert],
+                    &doc->lines[start_row + count_to_remove],
+                    tail_count * sizeof(Line));
+        }
+    } else if (count_to_remove > count_to_insert) {
+        size_t tail_count = doc->line_count - (start_row + count_to_remove);
+        if (tail_count > 0) {
+            memmove(&doc->lines[start_row + count_to_insert],
+                    &doc->lines[start_row + count_to_remove],
+                    tail_count * sizeof(Line));
+        }
+    }
+
+    // 3. Initialize and populate inserted lines
+    for (size_t i = 0; i < count_to_insert; ++i) {
+        Line *l = &doc->lines[start_row + i];
+        Line_Init(l);
+        if (new_data && new_data[i]) {
+            size_t len = strlen(new_data[i]);
+            Line_AppendStr(l, new_data[i], len);
+        }
+    }
+
+    // 4. Update document line count
+    doc->line_count = doc->line_count - count_to_remove + count_to_insert;
+    if (doc->line_count == 0) {
+        Line l;
+        Line_Init(&l);
+        Document_AddLine(doc, l);
+    }
+
+    // 5. Update syntax multiline comment cache
+    Syntax_UpdateMultilineComments(doc->lines, doc->line_count);
+}
+
+// Begins tracking a transactional edit before mutations execute.
+static void History_BeginEdit(History *h, const Document *doc, ActionType action, char char_data) {
+    if (!h || !doc) return;
+
+    bool is_typing = (action == ACTION_INSERT_CHAR);
+    bool is_backspace = (action == ACTION_DELETE_BACKWARD);
+
+    // Coalesce typing characters or continuous backspaces
+    if (h->can_coalesce && h->undo_count > 0 && !doc->has_selection) {
+        EditRecord *top = &h->undo_stack[h->undo_count - 1];
+        double now = GetTime();
+
+        if (is_typing && top->action == ACTION_INSERT_CHAR) {
+            if (char_data != ' ' && char_data != '\t' &&
+                doc->cursor_row == top->cursor_after_row &&
+                doc->cursor_col == top->cursor_after_col &&
+                (now - top->timestamp) < 0.85) {
+                h->in_transaction = true;
+                h->is_coalescing_active = true;
+                return;
+            }
+        } else if (is_backspace && top->action == ACTION_DELETE_BACKWARD) {
+            if (doc->cursor_row == top->cursor_after_row &&
+                doc->cursor_col == top->cursor_after_col &&
+                doc->cursor_col > 0 &&
+                (now - top->timestamp) < 0.85) {
+                h->in_transaction = true;
+                h->is_coalescing_active = true;
+                return;
+            }
+        }
+    }
+
+    // Determine the pre-mutation line range affected
+    size_t start_r = doc->cursor_row;
+    size_t end_r = doc->cursor_row;
+
+    if (doc->has_selection) {
+        size_t sr, sc, er, ec;
+        Document_GetSelectionBounds(doc, &sr, &sc, &er, &ec);
+        start_r = sr;
+        end_r = er;
+    } else if (action == ACTION_DELETE_BACKWARD && doc->cursor_col == 0 && doc->cursor_row > 0) {
+        start_r = doc->cursor_row - 1;
+        end_r = doc->cursor_row;
+    } else if (action == ACTION_DELETE_FORWARD && doc->cursor_row + 1 < doc->line_count) {
+        if (doc->cursor_col >= doc->lines[doc->cursor_row].size) {
+            start_r = doc->cursor_row;
+            end_r = doc->cursor_row + 1;
+        }
+    }
+
+    h->pre_doc_line_count = doc->line_count;
+    h->current_record.action = action;
+    h->current_record.start_row = start_r;
+    h->current_record.old_line_count = (end_r >= start_r) ? (end_r - start_r + 1) : 1;
+    h->current_record.old_lines = (char **)malloc(h->current_record.old_line_count * sizeof(char *));
+
+    for (size_t i = 0; i < h->current_record.old_line_count; ++i) {
+        size_t r = start_r + i;
+        const char *chars = (r < doc->line_count && doc->lines[r].chars) ? doc->lines[r].chars : "";
+        h->current_record.old_lines[i] = History_StrDup(chars);
+    }
+
+    h->current_record.cursor_before_row = doc->cursor_row;
+    h->current_record.cursor_before_col = doc->cursor_col;
+    h->current_record.had_selection_before = doc->has_selection;
+    h->current_record.anchor_before_row = doc->anchor_row;
+    h->current_record.anchor_before_col = doc->anchor_col;
+    h->current_record.timestamp = GetTime();
+
+    h->in_transaction = true;
+    h->is_coalescing_active = false;
+}
+
+// Commits the post-mutation delta to the history stack.
+static void History_CommitEdit(History *h, const Document *doc) {
+    if (!h || !doc || !h->in_transaction) return;
+
+    if (h->is_coalescing_active) {
+        EditRecord *top = &h->undo_stack[h->undo_count - 1];
+        if (top->new_lines && top->new_lines[0]) {
+            free(top->new_lines[0]);
+        }
+        const char *chars = (doc->cursor_row < doc->line_count && doc->lines[doc->cursor_row].chars)
+                            ? doc->lines[doc->cursor_row].chars : "";
+        top->new_lines[0] = History_StrDup(chars);
+        top->cursor_after_row = doc->cursor_row;
+        top->cursor_after_col = doc->cursor_col;
+        top->timestamp = GetTime();
+
+        h->in_transaction = false;
+        h->is_coalescing_active = false;
+        return;
+    }
+
+    long delta = (long)doc->line_count - (long)h->pre_doc_line_count;
+    long new_count_l = (long)h->current_record.old_line_count + delta;
+    if (new_count_l < 1) new_count_l = 1;
+    size_t new_count = (size_t)new_count_l;
+
+    h->current_record.new_line_count = new_count;
+    h->current_record.new_lines = (char **)malloc(new_count * sizeof(char *));
+    for (size_t i = 0; i < new_count; ++i) {
+        size_t r = h->current_record.start_row + i;
+        const char *chars = (r < doc->line_count && doc->lines[r].chars) ? doc->lines[r].chars : "";
+        h->current_record.new_lines[i] = History_StrDup(chars);
+    }
+
+    h->current_record.cursor_after_row = doc->cursor_row;
+    h->current_record.cursor_after_col = doc->cursor_col;
+    h->current_record.had_selection_after = doc->has_selection;
+    h->current_record.anchor_after_row = doc->anchor_row;
+    h->current_record.anchor_after_col = doc->anchor_col;
+
+    // Discard empty/no-op edits
+    if (h->current_record.old_line_count == h->current_record.new_line_count) {
+        bool identical = true;
+        for (size_t i = 0; i < h->current_record.old_line_count; ++i) {
+            if (strcmp(h->current_record.old_lines[i], h->current_record.new_lines[i]) != 0) {
+                identical = false;
+                break;
+            }
+        }
+        if (identical &&
+            h->current_record.cursor_before_row == h->current_record.cursor_after_row &&
+            h->current_record.cursor_before_col == h->current_record.cursor_after_col) {
+            History_FreeRecord(&h->current_record);
+            h->in_transaction = false;
+            return;
+        }
+    }
+
+    History_ClearRedo(h);
+    History_PushUndo(h, &h->current_record);
+
+    h->can_coalesce = (h->current_record.action == ACTION_INSERT_CHAR ||
+                       h->current_record.action == ACTION_DELETE_BACKWARD);
+    h->in_transaction = false;
+}
+
+static bool Document_Undo(Document *doc) {
+    if (!doc || g_history.undo_count == 0) return false;
+    History_BreakCoalesce(&g_history);
+
+    EditRecord rec = g_history.undo_stack[--g_history.undo_count];
+
+    Document_ReplaceLines(doc, rec.start_row, rec.new_line_count, rec.old_lines, rec.old_line_count);
+
+    doc->cursor_row = rec.cursor_before_row;
+    doc->cursor_col = rec.cursor_before_col;
+    doc->has_selection = rec.had_selection_before;
+    doc->anchor_row = rec.anchor_before_row;
+    doc->anchor_col = rec.anchor_before_col;
+
+    if (doc->cursor_row >= doc->line_count) {
+        doc->cursor_row = doc->line_count - 1;
+    }
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
+    if (g_history.redo_count < CE_MAX_HISTORY) {
+        g_history.redo_stack[g_history.redo_count++] = rec;
+    } else {
+        History_FreeRecord(&rec);
+    }
+
+    doc->modified = true;
+    return true;
+}
+
+static bool Document_Redo(Document *doc) {
+    if (!doc || g_history.redo_count == 0) return false;
+    History_BreakCoalesce(&g_history);
+
+    EditRecord rec = g_history.redo_stack[--g_history.redo_count];
+
+    Document_ReplaceLines(doc, rec.start_row, rec.old_line_count, rec.new_lines, rec.new_line_count);
+
+    doc->cursor_row = rec.cursor_after_row;
+    doc->cursor_col = rec.cursor_after_col;
+    doc->has_selection = rec.had_selection_after;
+    doc->anchor_row = rec.anchor_after_row;
+    doc->anchor_col = rec.anchor_after_col;
+
+    if (doc->cursor_row >= doc->line_count) {
+        doc->cursor_row = doc->line_count - 1;
+    }
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
+    History_PushUndo(&g_history, &rec);
+
+    doc->modified = true;
+    return true;
+}
+
 static void Document_InsertRawNewline(Document *doc) {
     if (!doc) return;
 
@@ -72,6 +335,7 @@ static void Document_OnAction(EventType type, const void *payload) {
     // Manage selection boundaries before movement
     bool is_movement = (p->action >= ACTION_MOVE_LEFT && p->action <= ACTION_MOVE_WORD_RIGHT);
     if (is_movement) {
+        History_BreakCoalesce(&g_history);
         if (shift && !doc->has_selection) {
             doc->anchor_row = doc->cursor_row;
             doc->anchor_col = doc->cursor_col;
@@ -81,15 +345,44 @@ static void Document_OnAction(EventType type, const void *payload) {
         }
     }
 
+    // Check if this action mutates document text
+    bool is_mutating = (p->action == ACTION_INSERT_CHAR ||
+                         p->action == ACTION_INSERT_NEWLINE ||
+                         p->action == ACTION_DELETE_BACKWARD ||
+                         p->action == ACTION_DELETE_FORWARD ||
+                         p->action == ACTION_DELETE_WORD_BACKWARD ||
+                         p->action == ACTION_DELETE_WORD_FORWARD ||
+                         p->action == ACTION_CUT ||
+                         p->action == ACTION_PASTE ||
+                         p->action == ACTION_DUPLICATE_LINE);
+
+    if (is_mutating) {
+        History_BeginEdit(&g_history, doc, p->action, p->char_data);
+    }
+
     size_t old_row = doc->cursor_row;
     size_t old_col = doc->cursor_col;
     bool text_changed = false;
 
     switch (p->action) {
+        case ACTION_UNDO:
+            if (Document_Undo(doc)) {
+                text_changed = true;
+            }
+            break;
+        case ACTION_REDO:
+            if (Document_Redo(doc)) {
+                text_changed = true;
+            }
+            break;
+
         case ACTION_COPY: Document_CopySelection(doc); break;
         case ACTION_CUT: Document_CutSelection(doc); text_changed = true; break;
         case ACTION_PASTE: Document_PasteClipboard(doc); text_changed = true; break;
-        case ACTION_SELECT_ALL: Document_SelectAll(doc); break;
+        case ACTION_SELECT_ALL:
+            History_BreakCoalesce(&g_history);
+            Document_SelectAll(doc);
+            break;
         case ACTION_DUPLICATE_LINE: Document_DuplicateLine(doc); text_changed = true; break;
 
         case ACTION_DELETE_WORD_BACKWARD: Document_DeleteWordBackward(doc); text_changed = true; break;
@@ -140,6 +433,7 @@ static void Document_OnAction(EventType type, const void *payload) {
 
         case ACTION_SCROLL:
             if (!ctrl && doc->line_count > 0) {
+                History_BreakCoalesce(&g_history);
                 g_wheel_accum += p->float_data * 3.0f;
                 int lines_to_scroll = (int)g_wheel_accum;
                 if (lines_to_scroll != 0) {
@@ -167,6 +461,10 @@ static void Document_OnAction(EventType type, const void *payload) {
         default: break;
     }
 
+    if (is_mutating) {
+        History_CommitEdit(&g_history, doc);
+    }
+
     if (is_movement || p->action == ACTION_SCROLL) {
         if (shift && doc->cursor_row == doc->anchor_row && doc->cursor_col == doc->anchor_col) {
             doc->has_selection = false;
@@ -186,11 +484,13 @@ static void Document_OnAction(EventType type, const void *payload) {
 
 void Document_Init(Document *doc) {
     g_active_doc = doc;
+    History_Init(&g_history);
     Event_Subscribe(EV_ACTION, Document_OnAction);
 }
 
 void Document_Free(Document *doc) {
     if (!doc) return;
+    History_Free(&g_history);
     for (size_t i = 0; i < doc->line_count; ++i) {
         Line_Free(&doc->lines[i]);
     }
@@ -228,6 +528,7 @@ void Document_InitEmpty(Document *doc) {
     doc->anchor_col = 0;
     doc->file_path[0] = '\0';
     doc->modified = false;
+    History_Clear(&g_history);
 }
 
 void Document_GetSelectionBounds(const Document *doc, size_t *sr, size_t *sc, size_t *er, size_t *ec) {

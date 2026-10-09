@@ -27,6 +27,8 @@ typedef enum {
     ACTION_PASTE,
     ACTION_SELECT_ALL,
     ACTION_DUPLICATE_LINE,
+    ACTION_UNDO,
+    ACTION_REDO,
     ACTION_SAVE,
     ACTION_LOAD,
     ACTION_SCROLL,
@@ -93,7 +95,7 @@ typedef struct {
 
 typedef struct {
     int theme_idx;
-    const void *theme; // Type erased to prevent circular Theme includes
+    const void *theme;
 } ThemeChangedPayload;
 
 // Global Event Callback Signature

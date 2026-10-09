@@ -10,7 +10,7 @@ void Input_Update(void) {
     p.ctrl_held = ctrl;
     p.shift_held = shift;
 
-    // F-keys
+    // Function Shortcuts (F1 - F8)
     if (IsKeyPressed(KEY_F1)) { p.action = ACTION_TOGGLE_HELP; Event_Emit(EV_ACTION, &p); }
     if (IsKeyPressed(KEY_F2)) { p.action = ACTION_TOGGLE_CRT; Event_Emit(EV_ACTION, &p); }
     if (IsKeyPressed(KEY_F3)) { p.action = ACTION_TOGGLE_SPOTLIGHT; Event_Emit(EV_ACTION, &p); }
@@ -20,8 +20,17 @@ void Input_Update(void) {
     if (IsKeyPressed(KEY_F7)) { p.action = ACTION_CAM_LINE_FOCUS; Event_Emit(EV_ACTION, &p); }
     if (IsKeyPressed(KEY_F8)) { p.action = ACTION_CYCLE_UI_SCALE; Event_Emit(EV_ACTION, &p); }
 
-    // Ctrl Shortcuts
+    // Control Shortcuts
     if (ctrl) {
+        if (IsKeyPressed(KEY_Z) || IsKeyPressedRepeat(KEY_Z)) {
+            p.action = shift ? ACTION_REDO : ACTION_UNDO;
+            Event_Emit(EV_ACTION, &p);
+        }
+        if (IsKeyPressed(KEY_Y) || IsKeyPressedRepeat(KEY_Y)) {
+            p.action = ACTION_REDO;
+            Event_Emit(EV_ACTION, &p);
+        }
+        if (IsKeyPressed(KEY_S)) { p.action = ACTION_SAVE; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_C)) { p.action = ACTION_COPY; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_X)) { p.action = ACTION_CUT; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_V)) { p.action = ACTION_PASTE; Event_Emit(EV_ACTION, &p); }
@@ -33,14 +42,14 @@ void Input_Update(void) {
         if (IsKeyPressed(KEY_BACKSPACE)) { p.action = ACTION_DELETE_WORD_BACKWARD; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_DELETE)) { p.action = ACTION_DELETE_WORD_FORWARD; Event_Emit(EV_ACTION, &p); }
     } else {
-        // Normal keys
+        // Unmodified Key Inputs
         if (IsKeyPressed(KEY_ENTER)) { p.action = ACTION_INSERT_NEWLINE; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_BACKSPACE)) { p.action = ACTION_DELETE_BACKWARD; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_DELETE)) { p.action = ACTION_DELETE_FORWARD; Event_Emit(EV_ACTION, &p); }
         if (IsKeyPressed(KEY_TAB)) { p.action = ACTION_INSERT_CHAR; p.char_data = '\t'; Event_Emit(EV_ACTION, &p); }
     }
 
-    // Navigation
+    // Navigation Commands
     if (IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT)) {
         p.action = ctrl ? ACTION_MOVE_WORD_LEFT : ACTION_MOVE_LEFT;
         Event_Emit(EV_ACTION, &p);
@@ -66,7 +75,7 @@ void Input_Update(void) {
         Event_Emit(EV_ACTION, &p);
     }
 
-    // Text Input
+    // Text Input Stream
     if (!ctrl) {
         int ch = GetCharPressed();
         while (ch > 0) {
@@ -79,7 +88,7 @@ void Input_Update(void) {
         }
     }
 
-    // Mouse Wheel (Zoom & Scroll)
+    // Mouse Wheel Events
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
         p.action = ACTION_SCROLL;

@@ -31,7 +31,7 @@ static void Camera_RecalculateTarget(void) {
         return;
     }
 
-    // Safely clamp active cursor bounds
+    // Safely clamp active cursor coordinates
     size_t cur_row = g_doc->cursor_row;
     if (cur_row >= g_doc->line_count) {
         cur_row = g_doc->line_count - 1;
@@ -50,7 +50,7 @@ static void Camera_RecalculateTarget(void) {
 
         if (total_doc_h <= visible_h) {
             // --- Short Document Framing ---
-            // Center the entire document neatly within the screen area
+            // Center the entire document within view
             float max_line_w = 0.0f;
             for (size_t i = 0; i < g_doc->line_count; ++i) {
                 float lw = Line_GetColX(g_font, &g_doc->lines[i], g_doc->lines[i].size, CE_FONT_SIZE, CE_FONT_SPACING);
@@ -73,8 +73,8 @@ static void Camera_RecalculateTarget(void) {
             g_target_center = (Vector2){ target_center_x, target_center_y };
             g_final_target_zoom = Clamp(base_zoom * g_user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
         } else {
-            // --- Long Document Framing ---
-            // Maintain stable reading scale; track cursor smoothly without top void
+            // --- Long Document Virtualized Framing ---
+            // Maintain stable reading scale and avoid whole-file line scans
             float base_zoom = 1.05f;
             g_final_target_zoom = Clamp(base_zoom * g_user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
 
@@ -92,12 +92,17 @@ static void Camera_RecalculateTarget(void) {
                 target_y = Clamp(target_y, min_target_y, max_target_y);
             }
 
-            // Anchor horizontal margin: line numbers sit ~70px from screen left
+            // Fixed reading margin: line numbers sit ~70px from screen left
             float left_margin_world = 70.0f / eff_zoom;
             float default_target_x = -gutter_space - left_margin_world + half_view_w;
             float target_x = default_target_x;
 
-            // Pan horizontally only if cursor extends past the right viewing boundary
+            // Scan only local lines in the visible window to determine horizontal bounds
+            int win_start = (int)((target_y - half_view_h) / line_height) - 1;
+            int win_end = (int)((target_y + half_view_h) / line_height) + 1;
+            if (win_start < 0) win_start = 0;
+            if (win_end >= (int)g_doc->line_count) win_end = (int)g_doc->line_count - 1;
+
             float right_edge_limit = default_target_x + half_view_w - (190.0f / eff_zoom);
             if (cursor_x > right_edge_limit) {
                 target_x = default_target_x + (cursor_x - right_edge_limit);
@@ -107,13 +112,11 @@ static void Camera_RecalculateTarget(void) {
         }
     } else if (g_cam_mode == CAM_MODE_CURSOR_FOCUS) {
         // --- Cursor Focus Mode ---
-        // Tight, dynamic tracking anchored directly on the typing point
         float base_zoom = 1.32f;
         g_final_target_zoom = Clamp(base_zoom * g_user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
         g_target_center = (Vector2){ cursor_x + 24.0f, cursor_y + line_height * 0.5f };
     } else if (g_cam_mode == CAM_MODE_LINE_FOCUS) {
         // --- Line Focus Mode ---
-        // Cinematic focus centered on the current line
         float curr_line_w = Line_GetColX(g_font, &g_doc->lines[cur_row], g_doc->lines[cur_row].size, CE_FONT_SIZE, CE_FONT_SPACING);
         float needed_w = fmaxf(curr_line_w + gutter_space + 180.0f, 480.0f);
         float line_zoom = ((float)screen_w * 0.78f) / needed_w;
@@ -121,7 +124,7 @@ static void Camera_RecalculateTarget(void) {
 
         g_final_target_zoom = Clamp(base_zoom * g_user_zoom_mult, CE_MIN_CAMERA_ZOOM, CE_MAX_CAMERA_ZOOM);
 
-        float target_x = curr_line_w > 0.0f ? curr_line_w * 0.5f : cursor_x;
+        float target_x = (curr_line_w > 0.0f) ? (curr_line_w * 0.5f) : cursor_x;
         float target_y = cursor_y + line_height * 0.5f;
         g_target_center = (Vector2){ target_x, target_y };
     }
@@ -198,7 +201,6 @@ void Camera_Update(float dt) {
 
     g_camera.offset = (Vector2){ (float)sw * 0.5f, (float)sh * 0.5f };
 
-    // Continuously compute the camera target
     Camera_RecalculateTarget();
 
     // Frame-rate independent exponential smoothing
