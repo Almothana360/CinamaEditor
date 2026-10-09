@@ -4,11 +4,8 @@
 #include "raylib.h"
 #include "core/types.h"
 #include "core/theme.h"
-#include "editor/editor.h"
+#include "modules/buffer/document.h"
 
-/**
- * Keystroke combo counter and title pulse manager.
- */
 typedef struct {
     int streak;
     float decay_timer;
@@ -16,9 +13,6 @@ typedef struct {
     float title_scale;
 } ComboSystem;
 
-/**
- * Context menu actions.
- */
 typedef enum {
     CTX_COPY = 0,
     CTX_CUT,
@@ -40,40 +34,27 @@ typedef enum {
     CTX_COUNT
 } ContextAction;
 
-/**
- * Visual metadata for individual context menu entries.
- */
 typedef struct {
     const char *label;
     const char *shortcut;
     bool is_separator;
 } ContextMenuItem;
 
-/**
- * Right-click context menu state.
- */
 typedef struct {
     bool active;
     Vector2 pos;
     int hovered_idx;
 } ContextMenu;
 
-/* --- Combo Lifecycle --- */
-
 void Combo_Init(ComboSystem *combo);
 void Combo_Update(ComboSystem *combo, float dt);
-void Combo_RegisterHit(ComboSystem *combo);
-
-/* --- Context Menu Lifecycle --- */
 
 void ContextMenu_Init(ContextMenu *menu);
 void ContextMenu_Open(ContextMenu *menu, Vector2 screen_pos);
 void ContextMenu_Close(ContextMenu *menu);
 ContextAction ContextMenu_GetHoveredAction(const ContextMenu *menu);
 
-/* --- UI Rendering Passes --- */
-
-void UI_DrawMinimap(const Editor *ed, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme);
+void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme);
 void UI_DrawContextMenu(ContextMenu *menu, int screen_w, int screen_h, float scale, CCameraMode cam_mode, const Theme *theme, Font font_body);
 void UI_DrawComboHUD(const ComboSystem *combo, int screen_w, float scale, const Theme *theme, Font font_body);
 void UI_DrawHelp(int screen_w, int screen_h, float scale, const Theme *theme, Font font_body);

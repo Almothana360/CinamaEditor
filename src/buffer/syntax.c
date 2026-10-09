@@ -1,7 +1,42 @@
 #include "buffer/syntax.h"
+#include "core/event.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+
+static const Document *g_syn_doc = NULL;
+static const Theme *g_syn_theme = NULL;
+static Font g_syn_font = {0};
+
+static void Syntax_OnEvent(EventType type, const void *payload) {
+    if (type == EV_THEME_CHANGED) {
+        const ThemeChangedPayload *p = payload;
+        g_syn_theme = (const Theme *)p->theme;
+    } else if (type == EV_ACTION) {
+        const ActionPayload *p = payload;
+        if (p->action == ACTION_INSERT_CHAR && p->char_data >= 32 && p->char_data <= 126) {
+            if (!g_syn_doc || !g_syn_theme) return;
+            char token[128];
+            size_t s_col, e_col;
+            if (Document_GetCompletedToken(g_syn_doc, token, sizeof(token), &s_col, &e_col)) {
+                Color glow_col = Syntax_GetHighlightColor(token, g_syn_theme);
+                if (glow_col.a > 0) {
+                    TokenCompletedPayload tp = { g_syn_doc->cursor_row, s_col, e_col, glow_col };
+                    Event_Emit(EV_TOKEN_COMPLETED, &tp);
+                }
+            }
+        }
+    }
+}
+
+void Syntax_Init(const Document *doc, Font font) {
+    g_syn_doc = doc;
+    g_syn_font = font;
+    Event_Subscribe(EV_THEME_CHANGED, Syntax_OnEvent);
+    Event_Subscribe(EV_ACTION, Syntax_OnEvent);
+}
+
+// ... Rest of your existing Syntax functions ...
 
 bool Syntax_IsKeyword(const char *word) {
     if (!word) return false;

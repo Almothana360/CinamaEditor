@@ -2,6 +2,8 @@
 #include "raymath.h"
 #include <stdio.h>
 
+#include "core/event.h"
+
 static const ContextMenuItem MENU_ITEMS[] = {
     [CTX_COPY]             = { "Copy", "Ctrl+C", false },
     [CTX_CUT]              = { "Cut", "Ctrl+X", false },
@@ -22,12 +24,31 @@ static const ContextMenuItem MENU_ITEMS[] = {
     [CTX_CRT_TOGGLE]       = { "Toggle CRT FX", "F2", false },
 };
 
+static ComboSystem *g_combo = NULL;
+
+static void UI_OnAction(EventType type, const void *payload) {
+    if (type != EV_ACTION || !payload || !g_combo) return;
+    const ActionPayload *p = payload;
+
+    if (p->action == ACTION_INSERT_CHAR || p->action == ACTION_INSERT_NEWLINE) {
+        g_combo->streak++;
+        g_combo->decay_timer = g_combo->max_timer;
+        g_combo->title_scale = 1.35f;
+
+        ComboHitPayload cp = { g_combo->streak, p->action, p->char_data };
+        Event_Emit(EV_COMBO_HIT, &cp);
+    }
+}
+
 void Combo_Init(ComboSystem *combo) {
     if (!combo) return;
     combo->streak = 0;
     combo->decay_timer = 0.0f;
     combo->max_timer = 1.35f;
     combo->title_scale = 1.0f;
+
+    g_combo = combo;
+    Event_Subscribe(EV_ACTION, UI_OnAction);
 }
 
 void Combo_Update(ComboSystem *combo, float dt) {
@@ -76,9 +97,9 @@ ContextAction ContextMenu_GetHoveredAction(const ContextMenu *menu) {
     return (ContextAction)menu->hovered_idx;
 }
 
-void UI_DrawMinimap(const Editor *ed, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme) {
-    if (!ed || !theme) return;
-
+// Replaced Editor* with Document*
+void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme) {
+    if (!doc || !theme) return;
     float mm_w = 120.0f * scale;
     float mm_h = (float)screen_h - (40.0f * scale);
     float mm_x = (float)screen_w - mm_w - (15.0f * scale);
@@ -87,35 +108,34 @@ void UI_DrawMinimap(const Editor *ed, Camera2D camera, int screen_w, int screen_
     DrawRectangleRounded((Rectangle){ mm_x, mm_y, mm_w, mm_h }, 0.08f, 4, ColorAlpha(theme->gutter_bg, 0.75f));
     DrawRectangleRoundedLines((Rectangle){ mm_x, mm_y, mm_w, mm_h }, 0.08f, 4, ColorAlpha(theme->gutter_num, 0.45f));
 
-    if (ed->line_count == 0) return;
+    if (doc->line_count == 0) return;
+    float line_scale = fminf((mm_h - (20.0f * scale)) / (float)doc->line_count, 3.5f * scale);
 
-    float line_scale = fminf((mm_h - (20.0f * scale)) / (float)ed->line_count, 3.5f * scale);
-    for (size_t r = 0; r < ed->line_count; ++r) {
-        float line_w = fminf((float)ed->lines[r].size * 1.5f * scale, mm_w - (18.0f * scale));
+    for (size_t r = 0; r < doc->line_count; ++r) {
+        float line_w = fminf((float)doc->lines[r].size * 1.5f * scale, mm_w - (18.0f * scale));
         if (line_w <= 0.0f) continue;
         float ly = mm_y + (10.0f * scale) + (float)r * line_scale;
-        Color c = (r == ed->cursor_row) ? theme->cursor : ColorAlpha(theme->syn_default, 0.35f);
+        Color c = (r == doc->cursor_row) ? theme->cursor : ColorAlpha(theme->syn_default, 0.35f);
         DrawRectangle((int)(mm_x + (8.0f * scale)), (int)ly, (int)line_w, (int)fmaxf(line_scale - 1.0f, 1.0f), c);
     }
 
-    float total_code_h = (float)ed->line_count * line_height;
+    float total_code_h = (float)doc->line_count * line_height;
     if (total_code_h > 0.0f) {
         float vp_top = (camera.target.y - ((float)screen_h * 0.5f) / camera.zoom) / total_code_h;
         float vp_h = ((float)screen_h / camera.zoom) / total_code_h;
-        float box_y = mm_y + (10.0f * scale) + vp_top * (ed->line_count * line_scale);
-        float box_h = vp_h * (ed->line_count * line_scale);
+        float box_y = mm_y + (10.0f * scale) + vp_top * (doc->line_count * line_scale);
+        float box_h = vp_h * (doc->line_count * line_scale);
         DrawRectangleLinesEx((Rectangle){ mm_x + (4.0f * scale), box_y, mm_w - (8.0f * scale), fmaxf(box_h, 8.0f) }, 1.0f, ColorAlpha(theme->cursor, 0.65f));
     }
 }
 
 void UI_DrawContextMenu(ContextMenu *menu, int screen_w, int screen_h, float scale, CCameraMode cam_mode, const Theme *theme, Font font_body) {
     if (!menu || !menu->active || !theme) return;
-
     float item_height = 28.0f * scale;
     float sep_height = 8.0f * scale;
     float width = 270.0f * scale;
-
     float total_h = 0.0f;
+
     for (int i = 0; i < CTX_COUNT; ++i) {
         total_h += MENU_ITEMS[i].is_separator ? sep_height : item_height;
     }
@@ -144,6 +164,7 @@ void UI_DrawContextMenu(ContextMenu *menu, int screen_w, int screen_h, float sca
 
         Rectangle item_rect = { menu->pos.x + 4.0f * scale, cur_y + 2.0f * scale, width - 8.0f * scale, item_height - 4.0f * scale };
         bool hovered = CheckCollisionPointRec(mpos, item_rect);
+
         if (hovered) {
             menu->hovered_idx = i;
             DrawRectangleRounded(item_rect, 0.15f, 4, theme->menu_hl);
@@ -191,14 +212,15 @@ void UI_DrawComboHUD(const ComboSystem *combo, int screen_w, float scale, const 
 
     float bar_w = 120.0f * scale;
     float bar_ratio = combo->decay_timer / combo->max_timer;
+
     DrawRectangle((int)c_pos.x, (int)(c_pos.y + sz.y + 4.0f * scale), (int)bar_w, (int)(4.0f * scale), ColorAlpha(theme->gutter_num, 0.5f));
     DrawRectangle((int)c_pos.x, (int)(c_pos.y + sz.y + 4.0f * scale), (int)(bar_w * bar_ratio), (int)(4.0f * scale), combo_color);
 }
 
 void UI_DrawHelp(int screen_w, int screen_h, float scale, const Theme *theme, Font font_body) {
     if (!theme) return;
-
     DrawRectangle(0, 0, screen_w, screen_h, (Color){ 0, 0, 0, 195 });
+
     float hw = 660.0f * scale, hh = 470.0f * scale;
     float hx = ((float)screen_w - hw) * 0.5f;
     float hy = ((float)screen_h - hh) * 0.5f;
@@ -236,11 +258,9 @@ void UI_DrawHelp(int screen_w, int screen_h, float scale, const Theme *theme, Fo
 void UI_DrawStatusBar(int screen_h, float scale, CCameraMode cam_mode, float zoom, float user_zoom_mult, const Theme *theme, Font font_body) {
     if (!theme) return;
     const char *cam_names[] = { "Script Fit", "Cursor Focus", "Line Focus" };
-
     char stats[256];
     snprintf(stats, sizeof(stats),
              "%s | Cam: %s | UI: %.0f%% | Theme: %s | Zoom: %.2fx (User: %.0f%%) | F1: Help",
              CE_APP_NAME_SHORT, cam_names[cam_mode], scale * 100.0f, theme->name, zoom, user_zoom_mult * 100.0f);
-
     DrawTextEx(font_body, stats, (Vector2){ 18.0f * scale, (float)screen_h - (24.0f * scale) }, 13.0f * scale, 1.0f, theme->status_text);
 }
