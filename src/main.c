@@ -6,6 +6,7 @@
 #include <math.h>
 #include "core/types.h"
 #include "core/theme.h"
+#include "core/event.h"
 #include "buffer/line.h"
 #include "buffer/syntax.h"
 #include "editor/editor.h"
@@ -34,6 +35,10 @@ typedef struct {
 
 static void App_Init(AppEngine *app, const char *initial_file) {
     memset(app, 0, sizeof(AppEngine));
+
+    // Initialize Event Architecture
+    EventBus_Init();
+
     app->theme_idx = 0;
     app->ui_scale_idx = 1; // 100% default scale
     app->cam_mode = CAM_MODE_BOUNDS_FIT;
@@ -110,6 +115,9 @@ static void App_Close(AppEngine *app) {
     Fx_Close(&app->fx);
     Audio_Close(&app->audio);
     Editor_Free(&app->editor);
+
+    // Cleanup Event Architecture
+    EventBus_Free();
 }
 
 static void App_HandleAction(AppEngine *app, ContextAction action) {

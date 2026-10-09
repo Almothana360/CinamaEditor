@@ -13,5 +13,6 @@ add_executable(CinamaEditor src/main.c
         src/fx/fx.c
         src/ui/ui.c
         src/buffer/line.c
-        src/buffer/syntax.c)
+        src/buffer/syntax.c
+        src/core/event.c)
 target_link_libraries(CinamaEditor raylib m winmm)
