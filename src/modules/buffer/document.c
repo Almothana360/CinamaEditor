@@ -144,7 +144,9 @@ void Document_Free(Document *doc) {
     for (size_t i = 0; i < doc->line_count; ++i) {
         Line_Free(&doc->lines[i]);
     }
-    free(doc->lines);
+    if (doc->lines) {
+        free(doc->lines);
+    }
     doc->lines = NULL;
     doc->line_count = 0;
     doc->line_capacity = 0;
@@ -222,9 +224,12 @@ void Document_DeleteSelection(Document *doc) {
 
     if (sr == er) {
         Line *l = &doc->lines[sr];
-        memmove(&l->chars[sc], &l->chars[ec], l->size - ec);
-        l->size -= (ec - sc);
-        l->chars[l->size] = '\0';
+        // FIX 2: Ensure we don't manipulate NULL buffers
+        if (l->chars) {
+            memmove(&l->chars[sc], &l->chars[ec], l->size - ec);
+            l->size -= (ec - sc);
+            l->chars[l->size] = '\0';
+        }
     } else {
         Line *first = &doc->lines[sr];
         Line *last = &doc->lines[er];
@@ -233,7 +238,7 @@ void Document_DeleteSelection(Document *doc) {
         first->size = sc;
         if (tail_len > 0) {
             Line_AppendStr(first, &last->chars[ec], tail_len);
-        } else {
+        } else if (first->chars) { // FIX 2: Add safety check
             first->chars[first->size] = '\0';
         }
 
@@ -277,7 +282,7 @@ void Document_CopySelection(const Document *doc) {
         size_t start = (r == sr) ? sc : 0;
         size_t end = (r == er) ? ec : doc->lines[r].size;
         size_t len = end - start;
-        if (len > 0) {
+        if (len > 0 && doc->lines[r].chars) {
             memcpy(&clip_buf[offset], &doc->lines[r].chars[start], len);
             offset += len;
         }
@@ -342,6 +347,12 @@ void Document_InsertChar(Document *doc, char c) {
     if (doc->has_selection) {
         Document_DeleteSelection(doc);
     }
+
+    // FIX 2: Clamp prior to insertion
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
     Line_InsertChar(&doc->lines[doc->cursor_row], doc->cursor_col, c);
     doc->cursor_col++;
     doc->modified = true;
@@ -352,6 +363,11 @@ void Document_InsertNewline(Document *doc) {
     if (!doc) return;
     if (doc->has_selection) {
         Document_DeleteSelection(doc);
+    }
+
+    // FIX 2: Ensure we're in bounds before evaluating characters
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
     }
 
     if (doc->line_count >= doc->line_capacity) {
@@ -371,14 +387,14 @@ void Document_InsertNewline(Document *doc) {
     Line_Init(next);
 
     size_t indent_len = 0;
-    while (indent_len < curr->size && (curr->chars[indent_len] == ' ' || curr->chars[indent_len] == '\t')) {
+    while (indent_len < curr->size && curr->chars && (curr->chars[indent_len] == ' ' || curr->chars[indent_len] == '\t')) {
         indent_len++;
     }
     if (indent_len > doc->cursor_col) {
         indent_len = doc->cursor_col;
     }
 
-    bool extra_indent = (doc->cursor_col > 0 && curr->chars[doc->cursor_col - 1] == '{');
+    bool extra_indent = (doc->cursor_col > 0 && curr->chars && curr->chars[doc->cursor_col - 1] == '{');
     char indent_buf[512];
     size_t total_indent = 0;
 
@@ -394,18 +410,26 @@ void Document_InsertNewline(Document *doc) {
 
     size_t tail_len = curr->size > doc->cursor_col ? curr->size - doc->cursor_col : 0;
     Line_Reserve(next, total_indent + tail_len);
+
     if (total_indent > 0) {
         memcpy(next->chars, indent_buf, total_indent);
         next->size = total_indent;
     }
-    if (tail_len > 0) {
+
+    if (tail_len > 0 && curr->chars) {
         memcpy(&next->chars[next->size], &curr->chars[doc->cursor_col], tail_len);
         next->size += tail_len;
     }
-    next->chars[next->size] = '\0';
+
+    // FIX 2: Ensure memory exists before writing string terminators to it
+    if (next->chars) {
+        next->chars[next->size] = '\0';
+    }
 
     curr->size = doc->cursor_col;
-    curr->chars[curr->size] = '\0';
+    if (curr->chars) {
+        curr->chars[curr->size] = '\0';
+    }
 
     doc->line_count++;
     doc->cursor_row++;
@@ -422,6 +446,11 @@ void Document_Backspace(Document *doc) {
         return;
     }
 
+    // FIX 2: Clamp bounds before backwards operations
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
     if (doc->cursor_col > 0) {
         Line_DeleteChar(&doc->lines[doc->cursor_row], doc->cursor_col - 1);
         doc->cursor_col--;
@@ -431,7 +460,7 @@ void Document_Backspace(Document *doc) {
         Line *curr = &doc->lines[doc->cursor_row];
         size_t prev_len = prev->size;
 
-        if (curr->size > 0) {
+        if (curr->size > 0 && curr->chars) {
             Line_AppendStr(prev, curr->chars, curr->size);
         }
         Line_Free(curr);
@@ -454,6 +483,10 @@ void Document_Delete(Document *doc) {
         return;
     }
 
+    if (doc->cursor_col > doc->lines[doc->cursor_row].size) {
+        doc->cursor_col = doc->lines[doc->cursor_row].size;
+    }
+
     Line *curr = &doc->lines[doc->cursor_row];
     if (doc->cursor_col < curr->size) {
         Line_DeleteChar(curr, doc->cursor_col);
@@ -461,7 +494,9 @@ void Document_Delete(Document *doc) {
         Syntax_UpdateMultilineComments(doc->lines, doc->line_count);
     } else if (doc->cursor_row + 1 < doc->line_count) {
         Line *next = &doc->lines[doc->cursor_row + 1];
-        Line_AppendStr(curr, next->chars, next->size);
+        if (next->size > 0 && next->chars) {
+            Line_AppendStr(curr, next->chars, next->size);
+        }
         Line_Free(next);
         memmove(&doc->lines[doc->cursor_row + 1],
                 &doc->lines[doc->cursor_row + 2],
@@ -484,8 +519,10 @@ void Document_MoveWordLeft(Document *doc) {
     }
 
     size_t col = doc->cursor_col;
-    while (col > 0 && isspace((unsigned char)l->chars[col - 1])) col--;
-    while (col > 0 && !isspace((unsigned char)l->chars[col - 1])) col--;
+    if (l->chars) {
+        while (col > 0 && isspace((unsigned char)l->chars[col - 1])) col--;
+        while (col > 0 && !isspace((unsigned char)l->chars[col - 1])) col--;
+    }
     doc->cursor_col = col;
 }
 
@@ -501,8 +538,10 @@ void Document_MoveWordRight(Document *doc) {
     }
 
     size_t col = doc->cursor_col;
-    while (col < l->size && !isspace((unsigned char)l->chars[col])) col++;
-    while (col < l->size && isspace((unsigned char)l->chars[col])) col++;
+    if (l->chars) {
+        while (col < l->size && !isspace((unsigned char)l->chars[col])) col++;
+        while (col < l->size && isspace((unsigned char)l->chars[col])) col++;
+    }
     doc->cursor_col = col;
 }
 
@@ -548,7 +587,9 @@ void Document_DuplicateLine(Document *doc) {
     Line *curr = &doc->lines[doc->cursor_row];
     Line dup;
     Line_Init(&dup);
-    Line_AppendStr(&dup, curr->chars, curr->size);
+    if (curr->chars) {
+        Line_AppendStr(&dup, curr->chars, curr->size);
+    }
 
     if (doc->line_count >= doc->line_capacity) {
         size_t new_cap = (doc->line_capacity == 0) ? 32 : doc->line_capacity * 2;
@@ -572,7 +613,7 @@ void Document_DuplicateLine(Document *doc) {
 bool Document_GetCompletedToken(const Document *doc, char *out_token, size_t max_len, size_t *out_start_col, size_t *out_end_col) {
     if (!doc || doc->line_count == 0 || doc->cursor_row >= doc->line_count) return false;
     const Line *l = &doc->lines[doc->cursor_row];
-    if (l->size == 0 || doc->cursor_col == 0) return false;
+    if (l->size == 0 || doc->cursor_col == 0 || !l->chars) return false;
 
     size_t end = doc->cursor_col;
     while (end > 0 && isspace((unsigned char)l->chars[end - 1])) end--;

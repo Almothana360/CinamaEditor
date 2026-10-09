@@ -111,7 +111,10 @@ static void App_Init(AppEngine *app, const char *initial_file) {
             "\treturn 0;\n"
             "}\n";
 
-        Document_InitEmpty(&app->doc);
+        // FIX 1: We use Document_Free here instead of Document_InitEmpty to avoid
+        // artificially shifting the buffer by 1 line which pushes the cursor out of bounds!
+        Document_Free(&app->doc);
+
         const char *p = sample;
         const char *line_start = p;
         while (*p) {
