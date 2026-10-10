@@ -11,6 +11,7 @@ typedef struct {
     float decay_timer;
     float max_timer;
     float title_scale;
+    float overdrive_alpha; // Phase 4 smooth opacity multiplier
 } ComboSystem;
 
 typedef enum {
@@ -54,10 +55,11 @@ void ContextMenu_Open(ContextMenu *menu, Vector2 screen_pos);
 void ContextMenu_Close(ContextMenu *menu);
 ContextAction ContextMenu_GetHoveredAction(const ContextMenu *menu);
 
-void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme);
+// UI elements now accept an 'alpha' parameter to fade out during Overdrive mode
+void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme, float alpha);
 void UI_DrawContextMenu(ContextMenu *menu, int screen_w, int screen_h, float scale, CCameraMode cam_mode, const Theme *theme, Font font_body);
 void UI_DrawComboHUD(const ComboSystem *combo, int screen_w, float scale, const Theme *theme, Font font_body);
 void UI_DrawHelp(int screen_w, int screen_h, float scale, const Theme *theme, Font font_body);
-void UI_DrawStatusBar(int screen_h, float scale, CCameraMode cam_mode, float zoom, float user_zoom_mult, const Theme *theme, Font font_body);
+void UI_DrawStatusBar(int screen_h, float scale, CCameraMode cam_mode, float zoom, float user_zoom_mult, const Theme *theme, Font font_body, float alpha);
 
 #endif // CE_UI_UI_H

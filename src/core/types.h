@@ -11,7 +11,7 @@
 
 // --- Text & Layout Metrics ---
 #define CE_TAB_SIZE        4
-#define CE_FONT_SIZE       22.0f
+#define CE_FONT_SIZE       64.0f
 #define CE_FONT_SPACING    1.5f
 
 // --- Particle & Visual FX Limits ---

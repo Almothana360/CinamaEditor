@@ -26,5 +26,6 @@ add_executable(CinamaEditor src/main.c
         src/modules/project/workspace.c
         src/ui/sidebar.c
         src/ui/palette.c
-        src/ui/completion.c)
+        src/ui/completion.c
+        src/ui/pause_menu.c)
 target_link_libraries(CinamaEditor raylib m winmm)

@@ -8,26 +8,29 @@
 #include "modules/buffer/document.h"
 #include <stdbool.h>
 
-// Initializes the sidebar subsystem with references to workspace and document
+// Initializes the Mission Select Datapad subsystem
 void Sidebar_Init(Workspace *ws, Document *doc);
 
-// Toggles sidebar visibility (Ctrl+B)
+// State controls
+void Sidebar_Open(void);
+void Sidebar_Close(void);
 void Sidebar_Toggle(void);
 
 // Visibility state accessors
 bool Sidebar_IsOpen(void);
 void Sidebar_SetOpen(bool open);
 
-// Returns active rendered width of the sidebar (0 if collapsed)
+// Returns active camera offset width (0.0f since it is a full cinematic overlay)
 float Sidebar_GetWidth(float scale);
 
 // Hit testing
 bool Sidebar_ContainsPoint(Vector2 point, int screen_w, int screen_h, float scale);
 
-// Input & Interaction handling (returns true if mouse event was consumed)
+// Handles keyboard navigation, search filtering, and deployment clicks
+// Returns true if the input was consumed by the Datapad
 bool Sidebar_Update(Vector2 mouse_screen, int screen_w, int screen_h, float scale);
 
-// Renders the floating rounded sidebar panel and tree hierarchy
+// Renders the full-screen Tactical Datapad / Mission Select overlay
 void Sidebar_Draw(int screen_w, int screen_h, float scale, const Theme *theme, Font font_body);
 
 #endif // CE_UI_SIDEBAR_H

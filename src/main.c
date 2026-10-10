@@ -19,7 +19,7 @@
 #include "fx/audio.h"
 #include "fx/fx.h"
 #include "ui/ui.h"
-#include "ui/menu_bar.h"
+#include "ui/pause_menu.h"
 #include "ui/sidebar.h"
 #include "ui/palette.h"
 #include "ui/completion.h"
@@ -58,6 +58,10 @@ static void App_OnAction(EventType type, const void *payload) {
             break;
         }
         case ACTION_CYCLE_UI_SCALE: app->ui_scale_idx = (app->ui_scale_idx + 1) % Theme_GetUIScaleCount(); break;
+        case ACTION_CHANGE_DIR: {
+            Sidebar_SetOpen(true);
+            break;
+        }
         case ACTION_LOAD: {
             if (app->doc.file_path[0] != '\0' && FileExists(app->doc.file_path)) {
                 Workspace_OpenFile(&app->workspace, &app->doc, app->doc.file_path);
@@ -102,7 +106,7 @@ static void App_Init(AppEngine *app, const char *initial_arg) {
     Fx_Init(&app->fx, &app->doc, &app->combo, app->font_syntax);
     Syntax_Init(&app->doc, app->font_syntax);
     ContextMenu_Init(&app->menu);
-    MenuBar_Init();
+    PauseMenu_Init();
     Sidebar_Init(&app->workspace, &app->doc);
     Palette_Init(&app->workspace, &app->doc);
     Completion_Init(&app->doc, app->font_syntax);
@@ -204,7 +208,7 @@ static void App_Init(AppEngine *app, const char *initial_arg) {
 static void App_Close(AppEngine *app) {
     Completion_Free();
     Palette_Free();
-    MenuBar_Close();
+    PauseMenu_Close();
     Camera_Close();
     Fx_Close(&app->fx);
     Audio_Close(&app->audio);
@@ -213,7 +217,7 @@ static void App_Close(AppEngine *app) {
     EventBus_Free();
 }
 
-static void App_HandleMenuAction(ContextAction action) {
+static void App_HandleContextMenuAction(ContextAction action) {
     ActionPayload p = {0};
     switch (action) {
         case CTX_COPY: p.action = ACTION_COPY; break;
@@ -254,39 +258,64 @@ int main(int argc, char **argv) {
 
         Vector2 mouse_screen = GetMousePosition();
 
-        // 1. Process Command Palette modal input (takes highest modal priority)
-        bool palette_was_open = Palette_IsOpen();
-        bool palette_consumed = Palette_Update(mouse_screen, screen_w, screen_h, ui_scale);
-        bool palette_active = Palette_IsOpen();
+        // 1. Process Pause Menu (Highest modal priority)
+        bool pause_was_open = PauseMenu_IsOpen();
+        bool pause_consumed = PauseMenu_Update(mouse_screen, screen_w, screen_h, ui_scale);
+        bool pause_active = PauseMenu_IsOpen();
 
-        // 2. Dismiss completion if modal palette or context menu is active
-        if (palette_active || app.menu.active) {
+        // 2. Process Terminal Command Palette modal input
+        bool palette_was_open = false;
+        bool palette_consumed = false;
+        bool palette_active = false;
+        if (!pause_active) {
+            palette_was_open = Palette_IsOpen();
+            palette_consumed = Palette_Update(mouse_screen, screen_w, screen_h, ui_scale);
+            palette_active = Palette_IsActive(); // active includes closing animation
+        }
+
+        // 3. Process Mission Select Datapad
+        bool sidebar_consumed = false;
+        bool sidebar_active = false;
+        if (!pause_active && !palette_active) {
+            sidebar_consumed = Sidebar_Update(mouse_screen, screen_w, screen_h, ui_scale);
+            sidebar_active = Sidebar_IsOpen();
+        }
+
+        // 4. Dismiss completion if any modal is active
+        if (pause_active || palette_active || sidebar_active || app.menu.active) {
             Completion_Close();
         }
 
-        // 3. Process Code Completion input (intercepts Up, Down, Tab, Enter, Esc when suggestions are visible)
+        // 5. Process Code Completion input
         bool comp_consumed = false;
-        if (!palette_was_open && !palette_active) {
+        if (!pause_active && !palette_was_open && !palette_active && !sidebar_active) {
             comp_consumed = Completion_Update(&app.doc, ui_scale);
         }
 
-        // 4. Process editor inputs via event pipeline
-        if (!palette_was_open && !palette_active && !comp_consumed) {
+        // 6. Escape Cascade -> Toggles Pause Menu only if no other modal was active
+        if (IsKeyPressed(KEY_ESCAPE) && !pause_was_open && !palette_was_open && !comp_consumed && !sidebar_consumed && !app.menu.active) {
+            PauseMenu_Toggle();
+            pause_consumed = true;
+            pause_active = true;
+        }
+
+        // 7. Process editor inputs via event pipeline (only when all overlays are closed)
+        if (!pause_active && !palette_was_open && !palette_consumed && !sidebar_active && !comp_consumed) {
             Input_Update();
         }
 
-        // 5. Check and refresh code completion trigger based on active word under cursor
-        if (!palette_active && !app.menu.active) {
+        // 8. Check and refresh code completion trigger based on active word under cursor
+        if (!pause_active && !palette_active && !sidebar_active && !app.menu.active) {
             Completion_CheckTrigger(&app.doc, app.font_syntax);
         }
 
-        // 6. Advance visual and physics modules
+        // 9. Advance visual and physics modules
         Cursor_Update(&app.cursor, dt, &app.doc, app.font_syntax, line_height);
         Camera_Update(dt);
         Fx_Update(&app.fx, dt);
         Combo_Update(&app.combo, dt);
 
-        // 7. Inject shake trauma into the camera
+        // 10. Inject shake trauma into the camera
         float shake_intensity = app.fx.shake_trauma * app.fx.shake_trauma;
         float shake_mag = shake_intensity * (app.combo.streak > 25 ? 24.0f : 14.0f);
         Vector2 shake_offset = {
@@ -295,29 +324,16 @@ int main(int argc, char **argv) {
         };
         Camera_SetShakeOffset(shake_offset);
 
-        // 8. Compute camera state with sidebar horizontal viewport offset
+        // 11. Compute dynamic camera offset (Push world down natively if terminal overlay is sliding)
         Camera2D cam = Camera_GetState();
-        float sidebar_w = Sidebar_GetWidth(ui_scale);
-        if (sidebar_w > 0.0f) {
-            cam.offset.x = ((float)screen_w + sidebar_w) * 0.5f;
-        } else {
-            cam.offset.x = (float)screen_w * 0.5f;
-        }
+        cam.offset.x = (float)screen_w * 0.5f;
+        cam.offset.y += Palette_GetVisualHeight(screen_h, ui_scale);
 
         Vector2 mouse_world = GetScreenToWorld2D(mouse_screen, cam);
 
-        // 9. Screen UI Input Handling (Menu bar and Sidebar intercept before text selection)
-        bool menu_consumed = false;
-        bool sidebar_consumed = false;
-
-        if (!palette_active) {
-            menu_consumed = MenuBar_Update(mouse_screen, screen_w, ui_scale);
-            sidebar_consumed = Sidebar_Update(mouse_screen, screen_w, screen_h, ui_scale);
-        }
-
-        // 10. Context menu handling
+        // 12. Context menu handling
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-            if (!menu_consumed && !sidebar_consumed && !palette_active) {
+            if (!sidebar_active && !palette_active && !pause_active) {
                 ContextMenu_Open(&app.menu, mouse_screen);
             }
         }
@@ -326,18 +342,16 @@ int main(int argc, char **argv) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 ContextAction action = ContextMenu_GetHoveredAction(&app.menu);
                 if ((int)action >= 0) {
-                    App_HandleMenuAction(action);
+                    App_HandleContextMenuAction(action);
                 }
                 ContextMenu_Close(&app.menu);
             }
         }
 
-        // 11. Mouse selection handling (isolated from menu bar, sidebar, palette, and completion popup)
+        // 13. Mouse selection handling (isolated from all UI overlays)
         bool in_comp = Completion_ContainsPoint(mouse_screen, cam, &app.doc, app.font_syntax, screen_w, screen_h, ui_scale);
         bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-        bool in_text_area = (!app.menu.active && !menu_consumed && !sidebar_consumed && !palette_active && !in_comp &&
-                             mouse_screen.y > MenuBar_GetHeight(ui_scale) &&
-                             (!Sidebar_IsOpen() || mouse_screen.x > sidebar_w));
+        bool in_text_area = (!app.menu.active && !pause_active && !sidebar_consumed && !palette_consumed && !in_comp);
 
         if (in_text_area) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -399,7 +413,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        // 12. Multi-layer rendering pipeline
+        // 14. Multi-layer rendering pipeline
         RenderContext ctx = {
             .doc = &app.doc,
             .cursor = &app.cursor,

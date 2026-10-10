@@ -2,10 +2,10 @@
 #include "render/canvas.h"
 #include "buffer/syntax.h"
 #include "buffer/line.h"
-#include "ui/menu_bar.h"
 #include "ui/sidebar.h"
 #include "ui/palette.h"
 #include "ui/completion.h"
+#include "ui/pause_menu.h"
 #include "raymath.h"
 #include <stdio.h>
 #include <math.h>
@@ -38,6 +38,9 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
+    // Overdrive Opacity Multiplier
+    float ui_alpha = ctx->combo ? ctx->combo->overdrive_alpha : 1.0f;
+
     BeginDrawing();
     ClearBackground(ctx->theme->bg);
 
@@ -68,13 +71,13 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
-    // 2. Culled Gutter Line Numbers
-    if (has_visible_lines) {
+    // 2. Culled Gutter Line Numbers (Fades to nothing during Overdrive)
+    if (has_visible_lines && ui_alpha > 0.01f) {
         for (int i = start_row; i <= end_row; ++i) {
             char num_str[16];
             snprintf(num_str, sizeof(num_str), "%d", i + 1);
             Color nc = ((size_t)i == ctx->doc->cursor_row) ? ctx->theme->gutter_num_curr : ctx->theme->gutter_num;
-            DrawTextEx(ctx->font_body, num_str, (Vector2){ -gutter_space, (float)i * line_height + 4.0f }, CE_FONT_SIZE - 2.0f, CE_FONT_SPACING, nc);
+            DrawTextEx(ctx->font_body, num_str, (Vector2){ -gutter_space, (float)i * line_height + 4.0f }, CE_FONT_SIZE - 2.0f, CE_FONT_SPACING, ColorAlpha(nc, ui_alpha));
         }
     }
 
@@ -101,7 +104,7 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
-    // 5. World Visual Effects
+    // 5. World Visual Effects (Always renders, especially during Overdrive)
     if (ctx->fx) {
         Fx_DrawWorld(ctx->fx);
     }
@@ -121,8 +124,12 @@ void Renderer_Draw(const RenderContext *ctx) {
     EndMode2D();
 
     // --- Screen-Space Anchored Canvas UI Pass ---
-    UI_DrawMinimap(ctx->doc, ctx->camera, ctx->screen_w, ctx->screen_h, line_height, ctx->ui_scale, ctx->theme);
 
+    // Minimap and Status Bar linked to Overdrive Alpha Dissolve
+    UI_DrawMinimap(ctx->doc, ctx->camera, ctx->screen_w, ctx->screen_h, line_height, ctx->ui_scale, ctx->theme, ui_alpha);
+    UI_DrawStatusBar(ctx->screen_h, ctx->ui_scale, ctx->cam_mode, ctx->camera.zoom, ctx->zoom_mult, ctx->theme, ctx->font_body, ui_alpha);
+
+    // Combo HUD inherently fades itself based on the streak decay, so it ignores the dissolve alpha
     if (ctx->combo) {
         UI_DrawComboHUD(ctx->combo, ctx->screen_w, ctx->ui_scale, ctx->theme, ctx->font_body);
     }
@@ -134,7 +141,7 @@ void Renderer_Draw(const RenderContext *ctx) {
         }
     }
 
-    // Docked Left File Explorer Sidebar
+    // Modals & Overlays
     Sidebar_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
 
     if (ctx->menu) {
@@ -145,16 +152,11 @@ void Renderer_Draw(const RenderContext *ctx) {
         UI_DrawHelp(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
     }
 
-    UI_DrawStatusBar(ctx->screen_h, ctx->ui_scale, ctx->cam_mode, ctx->camera.zoom, ctx->zoom_mult, ctx->theme, ctx->font_body);
-
-    // Floating Rounded Menu Bar
-    MenuBar_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
-
-    // Floating Code Completion Popup (Anchored directly near text cursor)
     Completion_Draw(ctx->camera, ctx->doc, ctx->font_syntax, ctx->font_body, ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme);
 
-    // Center-Anchored Floating Command Palette (Modal Top Layer)
     Palette_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
+
+    PauseMenu_Draw(ctx->screen_w, ctx->screen_h, ctx->ui_scale, ctx->theme, ctx->font_body);
 
     EndDrawing();
 }

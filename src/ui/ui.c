@@ -46,6 +46,7 @@ void Combo_Init(ComboSystem *combo) {
     combo->decay_timer = 0.0f;
     combo->max_timer = 1.35f;
     combo->title_scale = 1.0f;
+    combo->overdrive_alpha = 1.0f;
 
     g_combo = combo;
     Event_Subscribe(EV_ACTION, UI_OnAction);
@@ -61,6 +62,9 @@ void Combo_Update(ComboSystem *combo, float dt) {
         }
     }
     combo->title_scale = Lerp(combo->title_scale, 1.0f, 8.0f * dt);
+
+    float target_alpha = (combo->streak >= 8) ? 0.0f : 1.0f;
+    combo->overdrive_alpha = Lerp(combo->overdrive_alpha, target_alpha, 4.5f * dt);
 }
 
 void ContextMenu_Init(ContextMenu *menu) {
@@ -90,12 +94,11 @@ ContextAction ContextMenu_GetHoveredAction(const ContextMenu *menu) {
     return (ContextAction)menu->hovered_idx;
 }
 
-void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme) {
-    if (!doc || !theme) return;
+void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int screen_h, float line_height, float scale, const Theme *theme, float alpha) {
+    if (!doc || !theme || alpha <= 0.01f) return;
     UICanvas canvas = Canvas_Create(screen_w, screen_h, scale);
     float s = canvas.scale;
 
-    // Minimap floats on the right with a 10px top margin matching the top menu bar, and clears the status bar
     UIMargins mm_margins = Canvas_Margins(0.0f, 10.0f, 16.0f, 46.0f);
     Rectangle mm_rect = Canvas_GetRect(&canvas, ANCHOR_RIGHT_FILL, 120.0f, 0.0f, mm_margins);
     float mm_x = mm_rect.x;
@@ -103,8 +106,8 @@ void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int scre
     float mm_w = mm_rect.width;
     float mm_h = mm_rect.height;
 
-    DrawRectangleRounded(mm_rect, 0.08f, 4, ColorAlpha(theme->gutter_bg, 0.78f));
-    DrawRectangleRoundedLines(mm_rect, 0.08f, 4, ColorAlpha(theme->gutter_num, 0.45f));
+    DrawRectangleRounded(mm_rect, 0.08f, 4, ColorAlpha(theme->gutter_bg, 0.78f * alpha));
+    DrawRectangleRoundedLines(mm_rect, 0.08f, 4, ColorAlpha(theme->gutter_num, 0.45f * alpha));
 
     if (doc->line_count == 0) return;
     float line_scale = fminf((mm_h - (20.0f * s)) / (float)doc->line_count, 3.5f * s);
@@ -113,8 +116,11 @@ void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int scre
         float line_w = fminf((float)doc->lines[r].size * 1.5f * s, mm_w - (18.0f * s));
         if (line_w <= 0.0f) continue;
         float ly = mm_y + (10.0f * s) + (float)r * line_scale;
-        Color c = (r == doc->cursor_row) ? theme->cursor : ColorAlpha(theme->syn_default, 0.35f);
-        DrawRectangle((int)(mm_x + (8.0f * s)), (int)ly, (int)line_w, (int)fmaxf(line_scale - 1.0f, 1.0f), c);
+
+        Color base_col = (r == doc->cursor_row) ? theme->cursor : ColorAlpha(theme->syn_default, 0.35f);
+        Color draw_col = ColorAlpha(base_col, (base_col.a / 255.0f) * alpha);
+
+        DrawRectangle((int)(mm_x + (8.0f * s)), (int)ly, (int)line_w, (int)fmaxf(line_scale - 1.0f, 1.0f), draw_col);
     }
 
     float total_code_h = (float)doc->line_count * line_height;
@@ -123,7 +129,7 @@ void UI_DrawMinimap(const Document *doc, Camera2D camera, int screen_w, int scre
         float vp_h = ((float)screen_h / camera.zoom) / total_code_h;
         float box_y = mm_y + (10.0f * s) + vp_top * (doc->line_count * line_scale);
         float box_h = vp_h * (doc->line_count * line_scale);
-        DrawRectangleLinesEx((Rectangle){ mm_x + (4.0f * s), box_y, mm_w - (8.0f * s), fmaxf(box_h, 8.0f) }, 1.0f, ColorAlpha(theme->cursor, 0.65f));
+        DrawRectangleLinesEx((Rectangle){ mm_x + (4.0f * s), box_y, mm_w - (8.0f * s), fmaxf(box_h, 8.0f) }, 1.0f, ColorAlpha(theme->cursor, 0.65f * alpha));
     }
 }
 
@@ -224,62 +230,105 @@ void UI_DrawHelp(int screen_w, int screen_h, float scale, const Theme *theme, Fo
     UICanvas canvas = Canvas_Create(screen_w, screen_h, scale);
     float s = canvas.scale;
 
-    DrawRectangle(0, 0, screen_w, screen_h, (Color){ 0, 0, 0, 195 });
+    // Deep cinematic background tint
+    DrawRectangle(0, 0, screen_w, screen_h, ColorAlpha(theme->bg, 0.94f));
 
-    Rectangle h_rect = Canvas_GetRect(&canvas, ANCHOR_CENTER, 660.0f, 470.0f, Canvas_MarginZero());
+    // Tactical Grid overlay
+    for (int y = 0; y < screen_h; y += (int)(40.0f * s)) {
+        DrawLine(0, y, screen_w, y, ColorAlpha(theme->gutter_num, 0.05f));
+    }
+    for (int x = 0; x < screen_w; x += (int)(40.0f * s)) {
+        DrawLine(x, 0, x, screen_h, ColorAlpha(theme->gutter_num, 0.05f));
+    }
+
+    // Main Control Frame
+    Rectangle h_rect = Canvas_GetRect(&canvas, ANCHOR_CENTER, 860.0f, 520.0f, Canvas_MarginZero());
     h_rect = Canvas_ClampRect(&canvas, h_rect);
 
-    DrawRectangleRounded(h_rect, 0.05f, 6, theme->menu_bg);
-    DrawRectangleRoundedLines(h_rect, 0.05f, 6, theme->menu_border);
+    DrawRectangleRounded(h_rect, 0.03f, 4, ColorAlpha(theme->menu_bg, 0.90f));
+    DrawRectangleRoundedLines(h_rect, 0.03f, 4, ColorAlpha(theme->cursor, 0.6f));
 
-    DrawTextEx(font_body, "Cinema Editor (CE) - Controls", (Vector2){ h_rect.x + 25.0f * s, h_rect.y + 20.0f * s }, (CE_FONT_SIZE + 3.0f) * s, 1.5f, theme->cursor);
+    // Glowing Target Corner Brackets
+    float t_len = 24.0f * s;
+    float t_thk = 3.0f * s;
+    DrawRectangle((int)h_rect.x, (int)h_rect.y, (int)t_len, (int)t_thk, theme->cursor);
+    DrawRectangle((int)h_rect.x, (int)h_rect.y, (int)t_thk, (int)t_len, theme->cursor);
+    DrawRectangle((int)(h_rect.x + h_rect.width - t_len), (int)h_rect.y, (int)t_len, (int)t_thk, theme->cursor);
+    DrawRectangle((int)(h_rect.x + h_rect.width - t_thk), (int)h_rect.y, (int)t_thk, (int)t_len, theme->cursor);
+    DrawRectangle((int)h_rect.x, (int)(h_rect.y + h_rect.height - t_thk), (int)t_len, (int)t_thk, theme->cursor);
+    DrawRectangle((int)h_rect.x, (int)(h_rect.y + h_rect.height - t_len), (int)t_thk, (int)t_len, theme->cursor);
+    DrawRectangle((int)(h_rect.x + h_rect.width - t_len), (int)(h_rect.y + h_rect.height - t_thk), (int)t_len, (int)t_thk, theme->cursor);
+    DrawRectangle((int)(h_rect.x + h_rect.width - t_thk), (int)(h_rect.y + h_rect.height - t_len), (int)t_thk, (int)t_len, theme->cursor);
 
-    const char *help_lines[] = {
-        "Auto-Indent      : Preserves tabs/spaces automatically upon Enter",
-        "Undo / Redo      : Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z)",
-        "Camera Modes     : F5 (Script Fit) | F6 (Cursor Focus) | F7 (Line Focus)",
-        "UI Scaling       : F8 (Cycles 50% -> 100% -> 120% -> 150% ... 400%)",
-        "Select Text      : Click & Drag with mouse or Shift + Navigation",
-        "Context Menu     : Right click anywhere on screen",
-        "Copy / Cut / Paste: Ctrl+C / Ctrl+X / Ctrl+V",
-        "Zoom In/Out/Reset: Ctrl++ / Ctrl+- / Ctrl+0 or Ctrl + Mouse Wheel",
-        "Spotlight Mode   : F3 (darkens scene, illuminates mouse)",
-        "Switch Theme     : F4 (Cyber Dark, Synthwave, Solarized, Paper)",
-        "Word Navigation  : Ctrl + Left / Right",
-        "Word Deletion    : Ctrl + Backspace / Ctrl + Delete",
-        "Duplicate Line   : Ctrl + D",
-        "Select All       : Ctrl + A",
-        "Toggle CRT FX    : F2",
-        NULL
+    // Header Title
+    DrawTextEx(font_body, "/// S Y S T E M   C O N T R O L S", (Vector2){ h_rect.x + 30.0f * s, h_rect.y + 24.0f * s }, 18.0f * s, 2.0f, theme->cursor);
+    DrawLine((int)(h_rect.x + 30.0f * s), (int)(h_rect.y + 54.0f * s), (int)(h_rect.x + h_rect.width - 30.0f * s), (int)(h_rect.y + 54.0f * s), ColorAlpha(theme->cursor, 0.3f));
+
+    // Two Column Data Setup
+    const char *col1_keys[] = {
+        "Ctrl + Z", "Ctrl + Y", "Ctrl + C / X / V", "Ctrl + A", "Ctrl + D",
+        "Ctrl + Left / Right", "Ctrl + Backspace", "Ctrl + S", "Ctrl + P", "Ctrl + B"
+    };
+    const char *col1_desc[] = {
+        "Undo Action", "Redo Action", "Copy / Cut / Paste", "Select All", "Duplicate Line",
+        "Word Navigation", "Delete Entire Word", "Save Datacore", "Terminal Command Override", "Mission Select Datapad"
     };
 
-    float ly = h_rect.y + 65.0f * s;
-    for (int i = 0; help_lines[i]; ++i) {
-        DrawTextEx(font_body, help_lines[i], (Vector2){ h_rect.x + 25.0f * s, ly }, 14.0f * s, 1.0f, theme->syn_default);
-        ly += 24.0f * s;
+    const char *col2_keys[] = {
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "Ctrl + Plus/Minus", "Mouse Drag"
+    };
+    const char *col2_desc[] = {
+        "System Controls", "Toggle CRT Overdrive", "Toggle Spotlight", "Cycle Visual Theme",
+        "Cam: Script Fit Mode", "Cam: Cursor Focus Mode", "Cam: Line Focus Mode", "Cycle UI Scaling",
+        "Adjust Camera Zoom", "Select Code Blocks"
+    };
+
+    float col1_x = h_rect.x + 40.0f * s;
+    float col2_x = h_rect.x + h_rect.width * 0.5f + 20.0f * s;
+    float start_y = h_rect.y + 80.0f * s;
+    float row_h = 32.0f * s;
+
+    for (int i = 0; i < 10; ++i) {
+        // Left Column
+        DrawTextEx(font_body, col1_keys[i], (Vector2){ col1_x, start_y + (float)i * row_h }, 13.0f * s, 1.0f, theme->syn_keyword);
+        DrawTextEx(font_body, col1_desc[i], (Vector2){ col1_x + 160.0f * s, start_y + (float)i * row_h }, 13.0f * s, 1.0f, theme->syn_default);
+
+        // Right Column
+        DrawTextEx(font_body, col2_keys[i], (Vector2){ col2_x, start_y + (float)i * row_h }, 13.0f * s, 1.0f, theme->syn_keyword);
+        DrawTextEx(font_body, col2_desc[i], (Vector2){ col2_x + 160.0f * s, start_y + (float)i * row_h }, 13.0f * s, 1.0f, theme->syn_default);
+    }
+
+    // Footer Hint
+    float footer_y = h_rect.y + h_rect.height - 40.0f * s;
+    DrawLine((int)(h_rect.x + 30.0f * s), (int)(footer_y - 10.0f * s), (int)(h_rect.x + h_rect.width - 30.0f * s), (int)(footer_y - 10.0f * s), ColorAlpha(theme->cursor, 0.3f));
+
+    bool blink = ((int)(GetTime() * 2.0)) % 2 == 0;
+    if (blink) {
+        const char *msg = "[ ESC ] TO DISENGAGE";
+        Vector2 msg_sz = MeasureTextEx(font_body, msg, 14.0f * s, 2.0f);
+        DrawTextEx(font_body, msg, (Vector2){ h_rect.x + (h_rect.width - msg_sz.x) * 0.5f, footer_y + 4.0f * s }, 14.0f * s, 2.0f, theme->cursor);
     }
 }
 
-void UI_DrawStatusBar(int screen_h, float scale, CCameraMode cam_mode, float zoom, float user_zoom_mult, const Theme *theme, Font font_body) {
-    if (!theme) return;
+void UI_DrawStatusBar(int screen_h, float scale, CCameraMode cam_mode, float zoom, float user_zoom_mult, const Theme *theme, Font font_body, float alpha) {
+    if (!theme || alpha <= 0.01f) return;
     int screen_w = GetScreenWidth();
     UICanvas canvas = Canvas_Create(screen_w, screen_h, scale);
     float s = canvas.scale;
 
-    // Floating rounded rectangle status bar with margins from bottom and sides
     UIMargins sb_margins = Canvas_Margins(16.0f, 0.0f, 16.0f, 10.0f);
     Rectangle bar_rect = Canvas_GetRect(&canvas, ANCHOR_BOTTOM_FILL, 0.0f, 26.0f, sb_margins);
 
-    DrawRectangleRounded(bar_rect, 0.25f, 6, theme->status_bg);
-    DrawRectangleRoundedLines(bar_rect, 0.25f, 6, ColorAlpha(theme->gutter_num, 0.45f));
+    DrawRectangleRounded(bar_rect, 0.25f, 6, ColorAlpha(theme->status_bg, alpha));
+    DrawRectangleRoundedLines(bar_rect, 0.25f, 6, ColorAlpha(theme->gutter_num, 0.45f * alpha));
 
     const char *cam_names[] = { "Script Fit", "Cursor Focus", "Line Focus" };
     char stats[256];
     snprintf(stats, sizeof(stats),
-             "%s | Cam: %s | UI: %.0f%% | Theme: %s | Zoom: %.2fx (User: %.0f%%) | F1: Help",
+             "%s | Cam: %s | UI: %.0f%% | Theme: %s | Zoom: %.2fx (User: %.0f%%) | F1: Controls",
              CE_APP_NAME_SHORT, cam_names[cam_mode], scale * 100.0f, theme->name, zoom, user_zoom_mult * 100.0f);
 
     float font_size = 13.0f * s;
     float text_y = bar_rect.y + (bar_rect.height - font_size) * 0.5f;
-    DrawTextEx(font_body, stats, (Vector2){ bar_rect.x + 16.0f * s, text_y }, font_size, 1.0f, theme->status_text);
+    DrawTextEx(font_body, stats, (Vector2){ bar_rect.x + 16.0f * s, text_y }, font_size, 1.0f, ColorAlpha(theme->status_text, alpha));
 }

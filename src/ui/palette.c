@@ -26,6 +26,9 @@ static Workspace *g_pal_ws = NULL;
 static Document *g_pal_doc = NULL;
 
 static bool g_pal_open = false;
+static bool g_pal_active = false;
+static float g_pal_anim = 0.0f; // 0.0 to 1.0 animation progress
+
 static char g_pal_query[64] = {0};
 static int g_pal_query_len = 0;
 
@@ -75,7 +78,7 @@ static void Palette_BuildCandidates(void) {
 
     // 1. Register Core Application Commands
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Save File", "Ctrl+S", ACTION_SAVE, -1);
-    Palette_AddCandidate(PAL_ITEM_COMMAND, "Toggle File Explorer", "Ctrl+B", ACTION_NONE, -1);
+    Palette_AddCandidate(PAL_ITEM_COMMAND, "Toggle Mission Select Datapad", "Ctrl+B", ACTION_CHANGE_DIR, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Undo", "Ctrl+Z", ACTION_UNDO, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Redo", "Ctrl+Y", ACTION_REDO, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Cut Text", "Ctrl+X", ACTION_CUT, -1);
@@ -84,7 +87,7 @@ static void Palette_BuildCandidates(void) {
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Select All", "Ctrl+A", ACTION_SELECT_ALL, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Duplicate Line", "Ctrl+D", ACTION_DUPLICATE_LINE, -1);
 
-    Palette_AddCandidate(PAL_ITEM_COMMAND, "Next Theme", "F4", ACTION_CYCLE_THEME, -1);
+    Palette_AddCandidate(PAL_ITEM_COMMAND, "Next Visual Theme", "F4", ACTION_CYCLE_THEME, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Cycle UI Scale", "F8", ACTION_CYCLE_UI_SCALE, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Toggle CRT Scanlines", "F2", ACTION_TOGGLE_CRT, -1);
     Palette_AddCandidate(PAL_ITEM_COMMAND, "Toggle Spotlight", "F3", ACTION_TOGGLE_SPOTLIGHT, -1);
@@ -112,7 +115,6 @@ static void Palette_BuildCandidates(void) {
     }
 }
 
-// Subsequence fuzzy scoring algorithm
 static int FuzzyScore(const char *pattern, const char *str) {
     if (!pattern || pattern[0] == '\0') return 1;
     if (!str || str[0] == '\0') return 0;
@@ -149,7 +151,7 @@ static int FuzzyScore(const char *pattern, const char *str) {
         s_idx++;
     }
 
-    if (pattern[p_idx] != '\0') return 0; // Not all pattern characters matched
+    if (pattern[p_idx] != '\0') return 0;
 
     score -= (int)strlen(str) * 2;
     return (score > 1) ? score : 1;
@@ -210,13 +212,7 @@ static void Palette_ExecuteSelected(void) {
 
     if (item.type == PAL_ITEM_COMMAND) {
         if (item.action != ACTION_NONE) {
-            ActionPayload p = {
-                .action = item.action,
-                .char_data = 0,
-                .float_data = 0.0f,
-                .shift_held = false,
-                .ctrl_held = false
-            };
+            ActionPayload p = { .action = item.action };
             Event_Emit(EV_ACTION, &p);
         } else if (item.file_entry_idx == -1) {
             Sidebar_Toggle();
@@ -234,6 +230,8 @@ void Palette_Init(Workspace *ws, Document *doc) {
     g_pal_ws = ws;
     g_pal_doc = doc;
     g_pal_open = false;
+    g_pal_active = false;
+    g_pal_anim = 0.0f;
     g_pal_query[0] = '\0';
     g_pal_query_len = 0;
     g_pal_selected_idx = 0;
@@ -258,6 +256,7 @@ void Palette_Free(void) {
 
 void Palette_Open(void) {
     g_pal_open = true;
+    g_pal_active = true;
     g_pal_query[0] = '\0';
     g_pal_query_len = 0;
     Palette_BuildCandidates();
@@ -266,8 +265,6 @@ void Palette_Open(void) {
 
 void Palette_Close(void) {
     g_pal_open = false;
-    g_pal_query[0] = '\0';
-    g_pal_query_len = 0;
 }
 
 void Palette_Toggle(void) {
@@ -279,51 +276,42 @@ bool Palette_IsOpen(void) {
     return g_pal_open;
 }
 
-static Rectangle Palette_GetDialogRect(int screen_w, int screen_h, float s) {
-    float width = 560.0f * s;
-    if (width > (float)screen_w - 32.0f * s) {
-        width = (float)screen_w - 32.0f * s;
-    }
+bool Palette_IsActive(void) {
+    return g_pal_active;
+}
 
-    int visible_items = g_pal_filtered_count;
-    if (visible_items > 8) visible_items = 8;
-    if (visible_items < 1) visible_items = 1;
-
-    float item_h = 32.0f * s;
-    float input_h = 42.0f * s;
-    float footer_h = 24.0f * s;
-    float padding = 16.0f * s;
-
-    float height = input_h + ((float)visible_items * item_h) + footer_h + padding;
-    if (height > (float)screen_h - 40.0f * s) {
-        height = (float)screen_h - 40.0f * s;
-    }
-
-    float x = ((float)screen_w - width) * 0.5f;
-    float y = 55.0f * s;
-
-    return (Rectangle){ x, y, width, height };
+float Palette_GetVisualHeight(int screen_h, float scale) {
+    if (!g_pal_active) return 0.0f;
+    float max_h = (float)screen_h * 0.45f;
+    return max_h * g_pal_anim;
 }
 
 bool Palette_Update(Vector2 mouse_screen, int screen_w, int screen_h, float scale) {
-    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    float dt = GetFrameTime();
+    float target = g_pal_open ? 1.0f : 0.0f;
 
-    // Global Hotkey: Ctrl+P toggles the palette
-    if (ctrl && IsKeyPressed(KEY_P)) {
+    // Smooth sliding animation
+    g_pal_anim = Lerp(g_pal_anim, target, dt * 18.0f);
+
+    if (!g_pal_open && g_pal_anim < 0.01f) {
+        g_pal_active = false;
+        g_pal_anim = 0.0f;
+    }
+
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if ((ctrl && IsKeyPressed(KEY_P)) || IsKeyPressed(KEY_GRAVE)) {
         Palette_Toggle();
         return true;
     }
 
     if (!g_pal_open) return false;
 
-    float s = Palette_GetEffectiveScale(screen_w, scale);
-    Rectangle dialog = Palette_GetDialogRect(screen_w, screen_h, s);
-
     // 1. Text Typing Input
     int ch = GetCharPressed();
     bool query_changed = false;
     while (ch > 0) {
-        if (ch >= 32 && ch <= 126) {
+        // Prevent Tilde/Backtick from entering the search query since they act as hotkeys
+        if (ch >= 32 && ch <= 126 && ch != '`' && ch != '~') {
             if (g_pal_query_len < (int)sizeof(g_pal_query) - 2) {
                 g_pal_query[g_pal_query_len++] = (char)ch;
                 g_pal_query[g_pal_query_len] = '\0';
@@ -356,12 +344,11 @@ bool Palette_Update(Vector2 mouse_screen, int screen_w, int screen_h, float scal
         }
     }
 
-    // Keep active selection in the scroll view
     if (g_pal_selected_idx < g_pal_scroll_offset) {
         g_pal_scroll_offset = g_pal_selected_idx;
     }
-    if (g_pal_selected_idx >= g_pal_scroll_offset + 8) {
-        g_pal_scroll_offset = g_pal_selected_idx - 7;
+    if (g_pal_selected_idx >= g_pal_scroll_offset + 6) {
+        g_pal_scroll_offset = g_pal_selected_idx - 5;
     }
 
     // 3. Commit / Cancel Keys
@@ -375,16 +362,21 @@ bool Palette_Update(Vector2 mouse_screen, int screen_w, int screen_h, float scal
     }
 
     // 4. Mouse Clicks
+    float s = Palette_GetEffectiveScale(screen_w, scale);
+    float max_h = (float)screen_h * 0.45f;
+    float current_h = max_h * g_pal_anim;
+    float dialog_y = current_h - max_h;
+
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        if (CheckCollisionPointRec(mouse_screen, dialog)) {
+        if (mouse_screen.y <= current_h) {
             float item_h = 32.0f * s;
-            float list_y = dialog.y + 44.0f * s;
+            float list_y = dialog_y + 80.0f * s;
 
             int visible_items = g_pal_filtered_count - g_pal_scroll_offset;
-            if (visible_items > 8) visible_items = 8;
+            if (visible_items > 6) visible_items = 6;
 
             for (int i = 0; i < visible_items; ++i) {
-                Rectangle item_rect = { dialog.x + 8.0f * s, list_y + (float)i * item_h, dialog.width - 16.0f * s, item_h };
+                Rectangle item_rect = { 20.0f * s, list_y + (float)i * item_h, (float)screen_w - 40.0f * s, item_h };
                 if (CheckCollisionPointRec(mouse_screen, item_rect)) {
                     g_pal_selected_idx = g_pal_scroll_offset + i;
                     Palette_ExecuteSelected();
@@ -399,111 +391,109 @@ bool Palette_Update(Vector2 mouse_screen, int screen_w, int screen_h, float scal
 
     // Mouse Wheel
     float wheel = GetMouseWheelMove();
-    if (wheel != 0.0f) {
+    if (wheel != 0.0f && mouse_screen.y <= current_h) {
         g_pal_scroll_offset -= (int)wheel;
         if (g_pal_scroll_offset < 0) g_pal_scroll_offset = 0;
-        if (g_pal_scroll_offset > g_pal_filtered_count - 8) {
-            g_pal_scroll_offset = (g_pal_filtered_count > 8) ? (g_pal_filtered_count - 8) : 0;
+        if (g_pal_scroll_offset > g_pal_filtered_count - 6) {
+            g_pal_scroll_offset = (g_pal_filtered_count > 6) ? (g_pal_filtered_count - 6) : 0;
         }
     }
 
-    return true; // Always consumes input while open
+    return true; // Modal consumes all input while open
 }
 
 void Palette_Draw(int screen_w, int screen_h, float scale, const Theme *theme, Font font_body) {
-    if (!g_pal_open || !theme) return;
+    if (!g_pal_active || !theme) return;
 
     float s = Palette_GetEffectiveScale(screen_w, scale);
+    float max_h = (float)screen_h * 0.45f;
+    float current_h = max_h * g_pal_anim;
 
-    // 1. Semi-transparent backdrop overlay
-    DrawRectangle(0, 0, screen_w, screen_h, (Color){ 0, 0, 0, 160 });
+    // Outer Glow / Shadow attached to the moving bottom edge
+    DrawRectangle(0, (int)current_h, screen_w, (int)(4.0f * s), ColorAlpha(theme->cursor, g_pal_anim * 0.7f));
+    DrawRectangle(0, (int)current_h + (int)(4.0f * s), screen_w, (int)(16.0f * s), ColorAlpha((Color){0,0,0,255}, g_pal_anim * 0.4f));
 
-    Rectangle dialog = Palette_GetDialogRect(screen_w, screen_h, s);
+    // Scissor mode to naturally clip the console contents as it slides up/down
+    BeginScissorMode(0, 0, screen_w, (int)current_h);
 
-    // 2. Dialog Shadow & Background (Rounded Rectangle)
-    DrawRectangleRounded((Rectangle){ dialog.x + 3.0f * s, dialog.y + 4.0f * s, dialog.width, dialog.height }, 0.04f, 4, (Color){ 0, 0, 0, 140 });
-    DrawRectangleRounded(dialog, 0.04f, 4, theme->menu_bg);
-    DrawRectangleRoundedLines(dialog, 0.04f, 4, theme->menu_border);
+    float dialog_y = current_h - max_h;
 
-    // 3. Search Query Input Box
-    Rectangle input_box = { dialog.x + 8.0f * s, dialog.y + 8.0f * s, dialog.width - 16.0f * s, 34.0f * s };
-    DrawRectangleRounded(input_box, 0.18f, 4, theme->line_hl);
-    DrawRectangleRoundedLines(input_box, 0.18f, 4, ColorAlpha(theme->gutter_num, 0.45f));
+    // Background Panel
+    DrawRectangle(0, (int)dialog_y, screen_w, (int)max_h, ColorAlpha(theme->bg, 0.96f));
 
-    float font_size = 13.0f * s;
-    DrawTextEx(font_body, ">", (Vector2){ input_box.x + 10.0f * s, input_box.y + 10.0f * s }, font_size + 2.0f, 1.0f, theme->cursor);
-
-    float text_x = input_box.x + 28.0f * s;
-    if (g_pal_query_len == 0) {
-        DrawTextEx(font_body, "Type a command or filename... (Esc to close)", (Vector2){ text_x, input_box.y + 10.0f * s }, font_size, 1.0f, ColorAlpha(theme->gutter_num, 0.70f));
-    } else {
-        DrawTextEx(font_body, g_pal_query, (Vector2){ text_x, input_box.y + 10.0f * s }, font_size, 1.0f, theme->syn_default);
+    // CRT Scanlines
+    for (int y = 0; y < max_h; y += 4) {
+        DrawRectangle(0, (int)(dialog_y + y), screen_w, 1, ColorAlpha(theme->gutter_num, 0.12f));
     }
+
+    // Header Label
+    DrawTextEx(font_body, "/// TERMINAL OVERRIDE // EXECUTE COMMAND", (Vector2){ 24.0f * s, dialog_y + 16.0f * s }, 11.0f * s, 2.0f, theme->cursor);
+
+    // Input Box Layer
+    float input_y = dialog_y + 40.0f * s;
+    char prompt_buf[128];
+    snprintf(prompt_buf, sizeof(prompt_buf), "[root@sys] ~> %s", g_pal_query);
+
+    DrawTextEx(font_body, prompt_buf, (Vector2){ 24.0f * s, input_y }, 16.0f * s, 1.0f, theme->syn_default);
 
     // Blinking cursor
     bool blink = ((int)(GetTime() * 2.5)) % 2 == 0;
     if (blink) {
-        Vector2 q_sz = MeasureTextEx(font_body, g_pal_query, font_size, 1.0f);
-        float cursor_x = (g_pal_query_len == 0) ? text_x : (text_x + q_sz.x + 1.0f);
-        DrawRectangle((int)cursor_x, (int)(input_box.y + 8.0f * s), (int)(2.0f * s), (int)(18.0f * s), theme->cursor);
+        Vector2 text_sz = MeasureTextEx(font_body, prompt_buf, 16.0f * s, 1.0f);
+        DrawRectangle((int)(24.0f * s + text_sz.x + 3.0f * s), (int)input_y, (int)(10.0f * s), (int)(16.0f * s), theme->cursor);
     }
 
-    // 4. Candidate Items List
+    // Divider Line
+    DrawLine((int)(24.0f * s), (int)(input_y + 28.0f * s), screen_w - (int)(24.0f * s), (int)(input_y + 28.0f * s), ColorAlpha(theme->gutter_num, 0.35f));
+
+    // Candidate List
     float item_h = 32.0f * s;
-    float cur_y = dialog.y + 48.0f * s;
+    float cur_y = input_y + 40.0f * s;
+
     int visible_items = g_pal_filtered_count - g_pal_scroll_offset;
-    if (visible_items > 8) visible_items = 8;
+    if (visible_items > 6) visible_items = 6;
 
     Vector2 mpos = GetMousePosition();
 
     if (g_pal_filtered_count == 0) {
-        DrawTextEx(font_body, "No matching commands or files found.", (Vector2){ dialog.x + 20.0f * s, cur_y + 10.0f * s }, font_size, 1.0f, theme->gutter_num);
+        DrawTextEx(font_body, "NO MATCHING DIRECTIVES OR DATACORES FOUND.", (Vector2){ 24.0f * s, cur_y + 10.0f * s }, 13.0f * s, 1.0f, theme->gutter_num);
     } else {
         for (int i = 0; i < visible_items; ++i) {
             int idx = g_pal_scroll_offset + i;
             const PaletteItem *item = &g_pal_filtered[idx];
 
-            Rectangle row = { dialog.x + 8.0f * s, cur_y, dialog.width - 16.0f * s, item_h - 2.0f * s };
+            Rectangle row = { 24.0f * s, cur_y, (float)screen_w - 48.0f * s, item_h - 2.0f * s };
             bool is_selected = (idx == g_pal_selected_idx);
             bool is_hovered = CheckCollisionPointRec(mpos, row);
 
             if (is_selected) {
                 DrawRectangleRounded(row, 0.16f, 4, theme->menu_hl);
-                DrawRectangle((int)row.x, (int)row.y, (int)(3.0f * s), (int)row.height, theme->cursor);
+                DrawRectangle((int)row.x, (int)row.y, (int)(4.0f * s), (int)row.height, theme->cursor);
             } else if (is_hovered) {
                 DrawRectangleRounded(row, 0.16f, 4, ColorAlpha(theme->menu_hl, 0.55f));
             }
 
             // Category Badge
-            const char *badge = (item->type == PAL_ITEM_COMMAND) ? "CMD" : "FILE";
+            const char *badge = (item->type == PAL_ITEM_COMMAND) ? "EXEC" : "DATA";
             Color badge_col = (item->type == PAL_ITEM_COMMAND) ? theme->syn_keyword : theme->syn_type;
-            Rectangle badge_rect = { row.x + 8.0f * s, row.y + 6.0f * s, 36.0f * s, 18.0f * s };
+            Rectangle badge_rect = { row.x + 8.0f * s, row.y + 6.0f * s, 42.0f * s, 18.0f * s };
+
             DrawRectangleRounded(badge_rect, 0.22f, 4, ColorAlpha(badge_col, 0.18f));
-            DrawTextEx(font_body, badge, (Vector2){ badge_rect.x + 5.0f * s, badge_rect.y + 3.0f * s }, 10.0f * s, 1.0f, badge_col);
+            DrawTextEx(font_body, badge, (Vector2){ badge_rect.x + 8.0f * s, badge_rect.y + 3.0f * s }, 10.5f * s, 1.0f, badge_col);
 
             // Title
             Color title_col = is_selected ? theme->cursor : theme->syn_default;
-            DrawTextEx(font_body, item->title, (Vector2){ row.x + 52.0f * s, row.y + 8.0f * s }, font_size, 1.0f, title_col);
+            DrawTextEx(font_body, item->title, (Vector2){ row.x + 60.0f * s, row.y + 8.0f * s }, 13.0f * s, 1.0f, title_col);
 
-            // Subtitle / Shortcut (right-aligned)
+            // Subtitle / Path (right-aligned)
             if (item->subtitle[0] != '\0') {
-                Vector2 sub_sz = MeasureTextEx(font_body, item->subtitle, 11.0f * s, 1.0f);
-                DrawTextEx(font_body, item->subtitle, (Vector2){ row.x + row.width - sub_sz.x - 10.0f * s, row.y + 9.0f * s }, 11.0f * s, 1.0f, theme->gutter_num);
+                Vector2 sub_sz = MeasureTextEx(font_body, item->subtitle, 11.5f * s, 1.0f);
+                DrawTextEx(font_body, item->subtitle, (Vector2){ row.x + row.width - sub_sz.x - 12.0f * s, row.y + 9.0f * s }, 11.5f * s, 1.0f, theme->gutter_num);
             }
 
             cur_y += item_h;
         }
     }
 
-    // 5. Footer Hint Bar
-    float footer_y = dialog.y + dialog.height - 20.0f * s;
-    DrawLine((int)(dialog.x + 8.0f * s), (int)(footer_y - 4.0f * s), (int)(dialog.x + dialog.width - 8.0f * s), (int)(footer_y - 4.0f * s), ColorAlpha(theme->gutter_num, 0.30f));
-
-    char count_str[64];
-    snprintf(count_str, sizeof(count_str), "%d results", g_pal_filtered_count);
-    DrawTextEx(font_body, count_str, (Vector2){ dialog.x + 12.0f * s, footer_y }, 10.5f * s, 1.0f, theme->gutter_num);
-
-    const char *hints = "Enter: Select | Up/Down: Navigate | Esc: Close";
-    Vector2 hints_sz = MeasureTextEx(font_body, hints, 10.5f * s, 1.0f);
-    DrawTextEx(font_body, hints, (Vector2){ dialog.x + dialog.width - hints_sz.x - 12.0f * s, footer_y }, 10.5f * s, 1.0f, theme->gutter_num);
+    EndScissorMode();
 }
