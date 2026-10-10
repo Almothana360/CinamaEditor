@@ -1,47 +1,55 @@
-Architectural Refactoring Blueprint
-To prepare the codebase for seamless separation into modular compilation units without breaking single-file compilation, we organize the system into eight distinct domains. Each domain contains a Header Interface (declarations and types) followed by an Implementation Section:
+Absolutely. Right now, there is a stark contrast between the "meta-game" (the highly stylized, physical, sci-fi overlays we just built) and the "core gameplay loop" (the text buffer and minimap), which still look and feel like a traditional IDE.
 
-src/
-├── core/
-│   ├── types.h        // Shared constants, UI scale tables, CCameraMode
-│   ├── theme.h / .c   // Theme definitions, color palettes, theme manager
-├── buffer/
-│   ├── line.h / .c    // Dynamic line buffers, text measurement
-│   ├── syntax.h / .c  // Lexer, syntax highlighting, bracket matching
-├── editor/
-│   ├── editor.h / .c  // Buffer manipulation, cursor, selection, clipboard
-├── fx/
-│   ├── audio.h / .c   // Procedural synthesizer, sound effect dispatcher
-│   ├── fx.h / .c      // Particles, bloom flashes, CRT scanlines, spotlight
-└── ui/
-    ├── ui.h / .c      // Context menu, minimap, combo HUD, modal overlays
-    └── main.c         // Game loop, camera controller, input router
-Key Architectural Improvements:
-Zero Global Soup: Encapsulated scattered static globals into explicit subsystem contexts (AudioSystem, FxSystem, ContextMenu, Editor, and AppEngine).
+To achieve complete cohesive immersion, the code editor and minimap must be transformed into a Diegetic HUD (an interface that feels like it exists inside the game world).
 
-Explicit Dependency Injection: Functions now explicitly receive the contexts they operate on (Theme*, AudioSystem*, FxSystem*), eliminating hidden side-effects.
+Here is the roadmap to reshape the editor buffer and minimap into a sci-fi tactical display.
 
-Decoupled Editor Core: The editor logic does not directly mutate audio hardware or particle arrays; instead, it delegates effects via clean subsystem interfaces.
+Phase 6: The "Telemetry Feed" (Minimap Rework)
+The minimap should stop looking like a scrollbar and start looking like a live data-link or radar feed tracking your location in the mainframe.
 
-Header Guards & Single-Unit Structure: Every module in the file below is demarcated with clear boundary banners so you can copy-paste each block directly into .h and .c files when splitting.
+The Mechanic: The minimap becomes a dynamic, scanning telemetry HUD.
 
-How to Split into Multiple Files When Needed
-When you are ready to separate the codebase into multiple files:
+The Visuals:
 
-Extract Headers: Copy the typedef and function declarations of each numbered module block into its respective .h file:
+Viewport Reticle: Replace the flat rectangular outline representing the camera view with aggressive, glowing targeting brackets (e.g., ⌜ ⌝ and ⌞ ⌟).
 
-types.h: TAB_SIZE, CCameraMode, UI_SCALES, Theme
+Radar Sweep: A faint, horizontal "scanner" laser slowly sweeps down the minimap on a loop, illuminating the code blocks as it passes over them.
 
-audio.h: AudioSystem and Audio_* prototypes
+Active Line Tracking: A horizontal laser line extends from the minimap's right edge precisely at your current cursor height, visually connecting the telemetry feed to your active code line.
 
-buffer.h: Line and Line_* prototypes
+Phase 7: The "Execution Stack" (Gutter & Line Numbers)
+Standard line numbers look like a spreadsheet. We need to make the gutter feel like an avionics display or a hex-editor address column.
 
-syntax.h: BracketMatch and Syntax_* prototypes
+The Mechanic: The gutter becomes an active status indicator rather than a static list of numbers.
 
-fx.h: Particle, GlowFlash, FxSystem and Fx_* prototypes
+The Visuals:
 
-editor.h: Editor, SmoothCursor and Editor_* prototypes
+The Chevron: The current line number is replaced (or accompanied) by a glowing, animated chevron >> that pulses with your breathing rate.
 
-ui.h: ContextMenu, ComboSystem and UI_* prototypes
+The Data-Line: A 1-pixel vertical line separates the gutter from the code, but it glows intensely next to the active line and fades into darkness above and below it (exponential falloff).
 
-Extract Implementations: Move the corresponding static and non-static function bodies into matching .c files (audio.c, buffer.c, syntax.c, fx.c, editor.c, ui.c).
+Dimmed History: Line numbers far away from the cursor are heavily dimmed, drawing maximum visual focus to the immediate execution context.
+
+Phase 8: The "Targeting Matrix" (Cursor & Selection)
+The cursor is the player character. A flat rectangle isn't enough; it needs to feel like a precise targeting laser. Text selection should feel like locking onto an enemy.
+
+The Mechanic: Overhauling how the cursor draws and how blocks of text are highlighted.
+
+The Visuals:
+
+The Cursor: Instead of a solid block, it becomes a hollow box with a pulsing inner core, or vertical brackets [ ] that physically expand and contract slightly when you type.
+
+The Selection Block: Instead of painting a solid semi-transparent blue rectangle behind selected text, we draw a diagonal warning-stripe pattern (like caution tape or a restricted zone) that scrolls continuously while text is selected. The edges of the selection receive a high-intensity neon border.
+
+Phase 9: "Decryption & Trauma" (Buffer Rendering FX)
+Text shouldn't just exist; it should feel like raw data being processed by a terminal.
+
+The Mechanic: Adding micro-animations to the text rendering itself.
+
+The Visuals:
+
+Boot Sequence: When you deploy a Datacore from the Mission Select menu, the text doesn't instantly appear. It "decrypts"—random ASCII characters rapidly cycle into the actual code over 0.25 seconds.
+
+Destruction Glitches: When you delete a word or cut a line, the text doesn't just vanish. It horizontally shears (glitches) for one or two frames before disappearing, matching the heavy Thud sound effect we added.
+
+Which phase would you like to execute first? We can start by turning the Minimap into the Telemetry Feed (Phase 6), or dive straight into upgrading the cursor and selection mechanics into the Targeting Matrix (Phase 8).

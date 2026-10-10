@@ -191,7 +191,7 @@ void Syntax_UpdateMultilineComments(Line *lines, size_t line_count) {
 }
 
 void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
-                      float start_x, float start_y, Color color, const Theme *theme) {
+                      float start_x, float start_y, Color color, const Theme *theme, float decrypt_ratio) {
     if (!line || !line->chars || len == 0 || !theme) return;
     float offset_x = Line_GetColX(font, line, start, CE_FONT_SIZE, CE_FONT_SPACING);
 
@@ -205,6 +205,8 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
 
     char stack_buf[512];
     char *str = stack_buf;
+    size_t out_len = len;
+
     if (!has_tab) {
         if (len >= sizeof(stack_buf)) {
             str = (char *)malloc(len + 1);
@@ -226,7 +228,7 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
             str = (char *)malloc(max_exp);
             if (!str) return;
         }
-        size_t out_len = 0;
+        out_len = 0;
         for (size_t i = 0; i < len; ++i) {
             if (line->chars[start + i] == '\t') {
                 size_t num_spaces = CE_TAB_SIZE - (vcol % CE_TAB_SIZE);
@@ -240,6 +242,21 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
             }
         }
         str[out_len] = '\0';
+    }
+
+    // Phase 9: Boot Sequence Decryption Micro-Animation
+    if (decrypt_ratio < 1.0f) {
+        for (size_t i = 0; i < out_len; ++i) {
+            if (str[i] > 32) { // Ignore whitespace so indentation doesn't glitch
+                // Staggered falloff: left characters decrypt faster than right characters
+                float threshold = (decrypt_ratio * 1.5f) - ((float)i / (float)out_len) * 0.5f;
+                if (threshold < 1.0f) {
+                    if ((float)GetRandomValue(0, 100) / 100.0f > threshold) {
+                        str[i] = (char)GetRandomValue(33, 126); // Random printable ASCII
+                    }
+                }
+            }
+        }
     }
 
     Vector2 pos = { start_x + offset_x, start_y };
@@ -257,7 +274,7 @@ void Syntax_DrawToken(Font font, const Line *line, size_t start, size_t len,
     if (str != stack_buf) free(str);
 }
 
-void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, const Theme *theme) {
+void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, const Theme *theme, float decrypt_ratio) {
     if (!line || !line->chars || line->size == 0 || !theme) return;
     const char *text = line->chars;
     size_t len = line->size;
@@ -284,7 +301,7 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
                 }
                 i++;
             }
-            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_comment, theme);
+            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_comment, theme, decrypt_ratio);
             continue;
         }
 
@@ -293,13 +310,11 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             continue;
         }
 
-        // Single-line comment check
         if (sc_len > 0 && i + sc_len <= len && strncmp(&text[i], sc, sc_len) == 0) {
-            Syntax_DrawToken(font, line, i, len - i, start_x, start_y, theme->syn_comment, theme);
+            Syntax_DrawToken(font, line, i, len - i, start_x, start_y, theme->syn_comment, theme, decrypt_ratio);
             break;
         }
 
-        // Multi-line comment start check
         if (has_mc && i + mc_s_len <= len && strncmp(&text[i], mc_start, mc_s_len) == 0) {
             size_t token_start = i;
             i += mc_s_len;
@@ -312,19 +327,17 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
                 }
                 i++;
             }
-            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_comment, theme);
+            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_comment, theme, decrypt_ratio);
             continue;
         }
 
-        // Preprocessor (C/C++ #include, etc., provided '#' is not the single-line comment char)
         if (text[i] == '#' && strcmp(sc, "#") != 0) {
             size_t token_start = i;
             while (i < len && !isspace((unsigned char)text[i])) i++;
-            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_preproc, theme);
+            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_preproc, theme, decrypt_ratio);
             continue;
         }
 
-        // String and character literals
         bool is_delim = false;
         if (lang && lang->string_delim_count > 0) {
             for (int d = 0; d < lang->string_delim_count; ++d) {
@@ -346,19 +359,17 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
             }
             if (i < len) i++;
             Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y,
-                             (quote == '"' || quote == '`') ? theme->syn_string : theme->syn_number, theme);
+                             (quote == '"' || quote == '`') ? theme->syn_string : theme->syn_number, theme, decrypt_ratio);
             continue;
         }
 
-        // Numbers
         if (isdigit((unsigned char)text[i])) {
             size_t token_start = i;
             while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '.' || text[i] == 'x' || text[i] == 'X')) i++;
-            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_number, theme);
+            Syntax_DrawToken(font, line, token_start, i - token_start, start_x, start_y, theme->syn_number, theme, decrypt_ratio);
             continue;
         }
 
-        // Identifiers (keywords, types, identifiers)
         if (isalpha((unsigned char)text[i]) || text[i] == '_') {
             size_t token_start = i;
             while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '_')) i++;
@@ -370,15 +381,14 @@ void Syntax_DrawLine(Font font, const Line *line, float start_x, float start_y, 
                 Color col = theme->syn_default;
                 if (Grammar_IsKeyword(lang, word)) col = theme->syn_keyword;
                 else if (Grammar_IsType(lang, word)) col = theme->syn_type;
-                Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, col, theme);
+                Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, col, theme, decrypt_ratio);
             } else {
-                Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, theme->syn_default, theme);
+                Syntax_DrawToken(font, line, token_start, wlen, start_x, start_y, theme->syn_default, theme, decrypt_ratio);
             }
             continue;
         }
 
-        // Punctuation / Operators
-        Syntax_DrawToken(font, line, i, 1, start_x, start_y, theme->syn_default, theme);
+        Syntax_DrawToken(font, line, i, 1, start_x, start_y, theme->syn_default, theme, decrypt_ratio);
         i++;
     }
 }
